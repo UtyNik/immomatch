@@ -13,6 +13,7 @@ from database.db import (
     save_user_profile,
     toggle_auto_search,
     update_user_language,
+    upsert_listings,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "mark_deep_search_done",
     "count_ai_calls_today",
     "register_ai_call",
+    "upsert_listings",
 ]

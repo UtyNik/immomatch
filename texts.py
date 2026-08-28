@@ -146,6 +146,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ai_failed": "⚠️ AI-оцінка недоступна: <i>{error}</i>\n\nПеревірте <code>OPENAI_API_KEY</code> у <code>.env</code>.",
         "card_match_yes": "✅ <b>Підходить</b>",
         "card_match_no": "❌ <b>Не підходить</b>",
+        "source_kleinanzeigen": "Kleinanzeigen",
+        "source_immowelt": "Immowelt",
         "card_letter": "✉️ <b>Супровідний лист (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -324,6 +326,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ai_failed": "⚠️ AI-оценка недоступна: <i>{error}</i>\n\nПроверьте <code>OPENAI_API_KEY</code> в <code>.env</code>.",
         "card_match_yes": "✅ <b>Подходит</b>",
         "card_match_no": "❌ <b>Не подходит</b>",
+        "source_kleinanzeigen": "Kleinanzeigen",
+        "source_immowelt": "Immowelt",
         "card_letter": "✉️ <b>Сопроводительное письмо (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -499,6 +503,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ai_failed": "⚠️ AI review unavailable: <i>{error}</i>\n\nCheck <code>OPENAI_API_KEY</code> in <code>.env</code>.",
         "card_match_yes": "✅ <b>Good match</b>",
         "card_match_no": "❌ <b>Not a match</b>",
+        "source_kleinanzeigen": "Kleinanzeigen",
+        "source_immowelt": "Immowelt",
         "card_letter": "✉️ <b>Cover letter (Anschreiben)</b>",
         "btn_open": "🔗 Open",
         "ai_limit_reached": (

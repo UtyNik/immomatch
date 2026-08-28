@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -86,6 +87,25 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     day     TEXT    NOT NULL,
     calls   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
+)
+"""
+
+_CREATE_LISTINGS_TABLE: Final[str] = """
+CREATE TABLE IF NOT EXISTS listings (
+    source      TEXT      NOT NULL,
+    external_id TEXT      NOT NULL,
+    url         TEXT      NOT NULL UNIQUE,
+    title       TEXT,
+    price       INTEGER,
+    size_sqm    REAL,
+    rooms       REAL,
+    location    TEXT,
+    image_url   TEXT,
+    description TEXT      NOT NULL DEFAULT '',
+    raw_data    TEXT,
+    created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, external_id)
 )
 """
 
@@ -183,14 +203,27 @@ async def _add_missing_seen_columns(db: aiosqlite.Connection) -> None:
     logger.info("Таблица seen_apartments дополнена колонкой was_match")
 
 
+async def _migrate_seen_storage_ids(db: aiosqlite.Connection) -> None:
+    """Старые ID без префикса считаем Kleinanzeigen."""
+    await db.execute(
+        """
+        UPDATE seen_apartments
+        SET apartment_id = 'kleinanzeigen:' || apartment_id
+        WHERE apartment_id NOT LIKE '%:%'
+        """
+    )
+
+
 async def init_db() -> None:
     """Создаёт схему БД, если её ещё нет. Вызывается один раз при старте."""
     async with _connect() as db:
         await db.execute(_CREATE_USERS_TABLE)
         await db.execute(_CREATE_SEEN_TABLE)
         await db.execute(_CREATE_AI_USAGE_TABLE)
+        await db.execute(_CREATE_LISTINGS_TABLE)
         await _add_missing_columns(db)
         await _add_missing_seen_columns(db)
+        await _migrate_seen_storage_ids(db)
         # Кто уже искал жильё, тот не получает повторный обход на 3 страницы.
         await db.execute(
             """
@@ -357,6 +390,55 @@ async def update_user_language(user_id: int, lang: str) -> None:
         await db.execute(
             "UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id)
         )
+        await db.commit()
+
+
+async def upsert_listings(listings: list[dict[str, Any]]) -> None:
+    """Сохраняет или обновляет объявления из всех площадок."""
+    if not listings:
+        return
+
+    async with _connect() as db:
+        for item in listings:
+            source = str(item.get("source") or "kleinanzeigen")
+            external_id = str(item.get("external_id") or "")
+            url = str(item.get("link") or "")
+            if not external_id or not url:
+                continue
+            raw = item.get("raw_data")
+            raw_json = json.dumps(raw, ensure_ascii=False) if raw is not None else None
+            await db.execute(
+                """
+                INSERT INTO listings (
+                    source, external_id, url, title, price, size_sqm, rooms,
+                    location, image_url, description, raw_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source, external_id) DO UPDATE SET
+                    url = excluded.url,
+                    title = excluded.title,
+                    price = excluded.price,
+                    size_sqm = excluded.size_sqm,
+                    rooms = excluded.rooms,
+                    location = excluded.location,
+                    image_url = excluded.image_url,
+                    description = excluded.description,
+                    raw_data = excluded.raw_data,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    source,
+                    external_id,
+                    url,
+                    item.get("title"),
+                    item.get("price"),
+                    item.get("sqm"),
+                    item.get("rooms"),
+                    item.get("address"),
+                    item.get("image_url"),
+                    str(item.get("description") or ""),
+                    raw_json,
+                ),
+            )
         await db.commit()
 
 

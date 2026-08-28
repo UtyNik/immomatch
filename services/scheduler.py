@@ -78,7 +78,7 @@ async def _notify_match(
 
 
 async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
-    """Один пользователь: лимит AI, kleinanzeigen, фильтр, первое совпадение — пуш."""
+    """Один пользователь: лимит AI, все провайдеры, фильтр, первое совпадение — пуш."""
     from handlers.search import find_first_match
 
     user_id = int(profile["user_id"])
@@ -92,7 +92,8 @@ async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
         return
     if result.failure == "empty":
         logger.info(
-            "Автопоиск: пользователь %s, пустая выдача Kleinanzeigen", user_id
+            "Автопоиск: пользователь %s, пустая выдача по всем площадкам",
+            user_id,
         )
         return
     if result.failure:
@@ -118,10 +119,8 @@ async def run_background_search(bot: Bot) -> None:
     """Обходит пользователей с включённым автопоиском и шлёт пуш при совпадении.
 
     Для каждого пользователя — тот же конвейер, что и у ручного поиска
-    (`fetch_listing_cards` + фильтр + `load_listing_details` + AI): это
-    обёртка `fetch_kleinanzeigen_listings`, но страницы грузятся только
-    у объявлений, которые прошли отсев по цифрам. На первом `match`
-    рассылка этому пользователю останавливается до следующего тика джобы.
+    (оркестратор провайдеров + фильтр + load_details + AI): на первом
+    `match` рассылка этому пользователю останавливается до следующего тика.
     """
     users = await get_auto_search_users()
     logger.info("Автопоиск: старт, пользователей %d", len(users))

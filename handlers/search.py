@@ -22,23 +22,20 @@ from database import (
     mark_deep_search_done,
     register_ai_call,
     save_user_profile,
+    upsert_listings,
 )
 from handlers.common import Sender, delete_quietly, sender
 from handlers.onboarding import prompt_missing_profile_fields
 from keyboards import CB_SEARCH, CB_SEARCH_NEXT, SEARCH_BUTTON_TEXTS, profile_reply_keyboard
-from scrapers import (
-    FOLLOWUP_SEARCH_PAGES,
-    INITIAL_SEARCH_PAGES,
-    ScraperError,
-    fetch_listing_cards,
-    load_listing_details,
-)
+from scrapers import FOLLOWUP_SEARCH_PAGES, INITIAL_SEARCH_PAGES
 from services import (
     analyze_apartment_and_generate_letter,
     gender_restriction_reason,
     listing_type_reason,
     shared_wg_reason,
 )
+from services.parsers.base import legacy_dict_storage_id
+from services.search_orchestrator import get_search_orchestrator
 from services.translator import normalize_and_translate_user_input
 from texts import DEFAULT_LANG, t
 from validators import (
@@ -166,6 +163,13 @@ def link_only_keyboard(lang: str, link: str) -> InlineKeyboardMarkup:
     return listing_url_keyboard(lang, link)
 
 
+def _source_label(lang: str, source: str) -> str:
+    """Человекочитаемое имя площадки для плашки в карточке."""
+    key = f"source_{source}"
+    label = t(lang, key)
+    return label if label != key else source.replace("_", " ").title()
+
+
 def render_listing_card(
     lang: str, apartment: dict[str, Any], verdict: dict[str, Any]
 ) -> str:
@@ -182,10 +186,12 @@ def render_listing_card(
     if apartment.get("address"):
         facts.append(f"📍 {html.quote(str(apartment['address']))}")
 
+    source = str(apartment.get("source") or "kleinanzeigen")
+    source_label = _source_label(lang, source)
     title = _shorten(str(apartment.get("title") or ""), MAX_TITLE)
     verdict_title = t(lang, "card_match_yes" if verdict["match"] else "card_match_no")
 
-    lines = [f"🏠 <b>{html.quote(title)}</b>"]
+    lines = [f"🏠 [{source_label}] <b>{html.quote(title)}</b>"]
     if facts:
         lines.append(" · ".join(facts))
     lines.append("")
@@ -225,10 +231,10 @@ async def _collect_candidates(
     seen = 0
 
     for listing in listings:
-        external_id = str(listing.get("external_id") or "")
-        if not external_id:
+        storage_id = legacy_dict_storage_id(listing)
+        if not storage_id or storage_id.endswith(":"):
             continue
-        if await is_apartment_seen(user_id, external_id):
+        if await is_apartment_seen(user_id, storage_id):
             seen += 1
             continue
         reason = hard_filter_reason(profile, listing)
@@ -240,7 +246,7 @@ async def _collect_candidates(
                 logger.info(
                     "Отсев [%s] %s (%s): %s",
                     stage,
-                    external_id,
+                    storage_id,
                     listing.get("title") or "",
                     reason,
                 )
@@ -300,17 +306,23 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
     city, radius = await _prepare_search_location(profile)
     deep = not bool(profile.get("deep_search_done"))
     pages = INITIAL_SEARCH_PAGES if deep else FOLLOWUP_SEARCH_PAGES
-    try:
-        listings = await fetch_listing_cards(
-            city,
-            radius=radius,
-            budget_max=profile.get("budget_max"),
-            rooms_min=profile.get("rooms_min"),
-            max_pages=pages,
-        )
-    except ScraperError as error:
-        logger.error("Поиск для пользователя %s не удался: %s", user_id, error)
-        return FirstMatchResult(failure="scraper", failure_detail=str(error))
+    orchestrator = get_search_orchestrator()
+    search_criteria = {
+        "city_de": city,
+        "city": profile.get("city"),
+        "radius": radius,
+        "budget_max": profile.get("budget_max"),
+        "rooms_min": profile.get("rooms_min"),
+        "sqm_min": profile.get("sqm_min"),
+        "max_pages": pages,
+    }
+    listings, provider_errors = await orchestrator.fetch_all(search_criteria)
+    await upsert_listings(listings)
+
+    if not listings and provider_errors:
+        detail = "; ".join(provider_errors)
+        logger.error("Поиск для пользователя %s не удался: %s", user_id, detail)
+        return FirstMatchResult(failure="scraper", failure_detail=detail)
 
     if deep and listings:
         await mark_deep_search_done(user_id)
@@ -342,7 +354,7 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
         # Второй проход — после загрузки страниц: там настоящая Warmmiete,
         # Wohnfläche и число комнат.
         try:
-            await load_listing_details(candidates)
+            await orchestrator.load_details(candidates)
         except Exception:
             logger.exception("Не удалось догрузить страницы объявлений")
         detailed, filtered_detailed, _ = await _collect_candidates(
@@ -380,14 +392,14 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
 
         await mark_apartment_seen(
             user_id,
-            str(apartment["external_id"]),
+            legacy_dict_storage_id(apartment),
             was_match=bool(verdict["match"]),
         )
 
         if not verdict["match"]:
             logger.info(
                 "Объявление %s отклонено: %s",
-                apartment["external_id"],
+                legacy_dict_storage_id(apartment),
                 verdict.get("reason"),
             )
             continue
