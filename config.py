@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     auto_search_interval_minutes: int = 10
     # Сколько пользователей автопоиск обрабатывает одновременно (asyncio, не потоки).
     auto_search_concurrency: int = 3
+    # Telegram user id администратора для алертов парсеров (опционально).
+    admin_telegram_id: int | None = None
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

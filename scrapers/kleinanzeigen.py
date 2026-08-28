@@ -15,6 +15,8 @@ from typing import Any, Final
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from services.alerts import alert_blocked_html, alert_http_status, alert_parse_failure
+from services.http_politeness import detect_block_reason, polite_delay
 from services.listing_time import (
     parse_german_listing_date,
     parse_iso_from_html,
@@ -126,15 +128,17 @@ def _seconds_blocked() -> int:
     return max(0, int(remaining))
 
 
-def _mark_blocked() -> None:
-    """После серии 403 не дёргаем сайт каждые 10 минут — блок только усилится."""
+async def _mark_blocked(*, status_code: int = 403, url: str | None = None) -> None:
+    """После серии 403/429 не дёргаем сайт каждые 10 минут — блок только усилится."""
     global _blocked_until, _session_warmed
     _blocked_until = time.monotonic() + _BLOCK_COOLDOWN_SEC
     _session_warmed = False
     logger.warning(
-        "Kleinanzeigen ответил 403 — пауза %.0f мин",
+        "Kleinanzeigen ответил %s — пауза %.0f мин",
+        status_code,
         _BLOCK_COOLDOWN_SEC / 60,
     )
+    await alert_http_status("kleinanzeigen", status_code, url=url)
 
 
 def _raise_if_blocked() -> None:
@@ -151,6 +155,7 @@ async def _warmup(client: httpx.AsyncClient, *, force: bool = False) -> None:
     if _session_warmed and not force:
         return
     try:
+        await polite_delay()
         response = await client.get(BASE_URL)
         _session_warmed = response.status_code < 400
         logger.info(
@@ -600,6 +605,11 @@ def _parse_details(html: str, listing: dict[str, Any]) -> None:
         neben=neben,
         default="kalt" if (kalt is not None or listed is not None) else "unknown",
     )
+    listing["rent_breakdown"] = {
+        "warm": warm,
+        "kalt": kalt,
+        "neben": neben,
+    }
 
     contact_root = soup.select_one("#viewad-contact")
     contact_name = _text_or_none(soup.select_one(".userprofile-vip"))
@@ -630,6 +640,7 @@ async def _load_details(
     """Скачивает страницу объявления и дополняет словарь."""
     async with semaphore:
         try:
+            await polite_delay()
             response = await client.get(listing["link"])
             response.raise_for_status()
         except httpx.HTTPError as error:
@@ -656,6 +667,7 @@ async def _get_search_html(client: httpx.AsyncClient, url: str) -> str:
     last_status: int | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
+            await polite_delay()
             response = await client.get(url)
         except httpx.HTTPError as error:
             raise ScraperError(f"Сеть недоступна: {error}") from error
@@ -678,9 +690,17 @@ async def _get_search_html(client: httpx.AsyncClient, url: str) -> str:
             raise ScraperError(
                 f"Сайт ответил {error.response.status_code} на {url}"
             ) from error
+        block = detect_block_reason(response.text)
+        if block:
+            await alert_blocked_html(
+                "kleinanzeigen",
+                response.text,
+                context=f"{block} — {url}",
+            )
+            raise ScraperError(f"Kleinanzeigen: {block} на {url}")
         return response.text
 
-    _mark_blocked()
+    await _mark_blocked(status_code=last_status or 403, url=url)
     raise ScraperError(f"Сайт ответил {last_status} на {url}")
 
 
@@ -698,6 +718,7 @@ async def _lookup_location_id(city: str) -> str | None:
         async with httpx.AsyncClient(
             headers=_JSON_HEADERS, timeout=REQUEST_TIMEOUT, follow_redirects=True
         ) as client:
+            await polite_delay()
             response = await client.get(
                 LOCATION_SUGGEST_URL, params={"query": city.strip()}
             )
@@ -713,6 +734,7 @@ async def _lookup_location_id(city: str) -> str | None:
                 async with httpx.AsyncClient(
                     headers=_JSON_HEADERS, timeout=REQUEST_TIMEOUT, follow_redirects=True
                 ) as client:
+                    await polite_delay()
                     response = await client.get(
                         LOCATION_SUGGEST_URL, params={"query": short}
                     )
@@ -844,6 +866,17 @@ async def fetch_listing_cards(
                     logger.warning(
                         "На странице %d узлов объявлений, ни один не разобрался",
                         raw_count,
+                    )
+                    if page == 1:
+                        await alert_parse_failure(
+                            "kleinanzeigen",
+                            detail=f"узлов {raw_count}, разобрано 0",
+                        )
+                elif page == 1 and detect_block_reason(html):
+                    await alert_blocked_html(
+                        "kleinanzeigen",
+                        html,
+                        context="пустая выдача на первой странице",
                     )
                 elif page == 1 and km > 0:
                     fallback = make_url(location_id, 0)

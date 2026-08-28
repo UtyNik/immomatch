@@ -35,6 +35,9 @@ from services import (
     shared_wg_reason,
 )
 from services.parsers.base import legacy_dict_storage_id
+from services.deduplicator import apartment_to_listing_data, is_duplicate_listing
+from services.lease_filter import temporary_lease_reason
+from services.listing_price import format_price_line
 from services.listing_time import format_published_ago
 from services.search_orchestrator import get_search_orchestrator
 from services.translator import normalize_and_translate_user_input
@@ -127,6 +130,10 @@ def hard_filter_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> st
     if listing_kind is not None:
         return listing_kind
 
+    lease = temporary_lease_reason(apartment)
+    if lease is not None:
+        return lease
+
     wg = shared_wg_reason(profile, apartment)
     if wg is not None:
         return wg
@@ -183,7 +190,10 @@ def render_listing_card(
 ) -> str:
     """Собирает карточку объявления с вердиктом AI и письмом."""
     facts: list[str] = []
-    if apartment.get("price") is not None:
+    price_line = format_price_line(lang, apartment)
+    if price_line:
+        facts.append(price_line)
+    elif apartment.get("price") is not None:
         facts.append(f"💶 {int(apartment['price'])} €")
     rooms = _format_rooms(apartment.get("rooms"))
     if rooms:
@@ -254,12 +264,17 @@ async def _collect_candidates(
             # поднимет бюджет, они снова попадут в выборку.
             filtered += 1
             if log_reasons:
+                log_msg = (
+                    f"Отброшено ({reason})"
+                    if reason.startswith("Временная аренда")
+                    else reason
+                )
                 logger.info(
                     "Отсев [%s] %s (%s): %s",
                     stage,
                     storage_id,
                     listing.get("title") or "",
-                    reason,
+                    log_msg,
                 )
             continue
         candidates.append(listing)
@@ -377,6 +392,22 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
         )
         candidates = detailed
         filtered += filtered_detailed
+
+    if not candidates:
+        return FirstMatchResult(filtered=filtered)
+
+    deduped: list[dict[str, Any]] = []
+    for apartment in candidates:
+        if await is_duplicate_listing(apartment_to_listing_data(apartment)):
+            filtered += 1
+            await mark_apartment_seen(
+                user_id,
+                legacy_dict_storage_id(apartment),
+                was_match=False,
+            )
+            continue
+        deduped.append(apartment)
+    candidates = deduped
 
     if not candidates:
         return FirstMatchResult(filtered=filtered)

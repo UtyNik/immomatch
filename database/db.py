@@ -442,6 +442,32 @@ async def upsert_listings(listings: list[dict[str, Any]]) -> None:
         await db.commit()
 
 
+async def fetch_recent_listings_for_dedup(
+    *,
+    exclude_source: str,
+    days: int = 7,
+    db: aiosqlite.Connection | None = None,
+) -> list[dict[str, Any]]:
+    """Объявления из listings за последние N дней, кроме указанной площадки."""
+    query = """
+        SELECT source, external_id, price, size_sqm, rooms, location
+        FROM listings
+        WHERE source != ?
+          AND datetime(COALESCE(updated_at, created_at)) >= datetime('now', ?)
+    """
+    params = (exclude_source, f"-{int(days)} days")
+
+    if db is not None:
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async with _connect() as connection:
+        async with connection.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
 async def is_apartment_seen(user_id: int, apt_id: str) -> bool:
     """Показывали ли уже это объявление пользователю."""
     async with _connect() as db:

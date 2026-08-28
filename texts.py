@@ -149,6 +149,14 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
         "source_wggesucht": "WG-Gesucht",
+        "card_price_warm_detail": (
+            "💰 <b>Ціна:</b> {warm} € Warmmiete ({kalt} € Kalt + {nk} € NK)"
+        ),
+        "card_price_warm_only": "🔥 <b>Ціна:</b> {warm} € Warmmiete",
+        "card_price_kalt_only": "❄️ <b>Ціна:</b> {kalt} € Kaltmiete (+ комунальні)",
+        "card_price_kalt_with_nk": (
+            "❄️ <b>Ціна:</b> {kalt} € Kaltmiete + {nk} € NK"
+        ),
         "card_letter": "✉️ <b>Супровідний лист (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -330,6 +338,14 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
         "source_wggesucht": "WG-Gesucht",
+        "card_price_warm_detail": (
+            "💰 <b>Цена:</b> {warm} € Warmmiete ({kalt} € Kalt + {nk} € NK)"
+        ),
+        "card_price_warm_only": "🔥 <b>Цена:</b> {warm} € Warmmiete",
+        "card_price_kalt_only": "❄️ <b>Цена:</b> {kalt} € Kaltmiete (+ коммунальные)",
+        "card_price_kalt_with_nk": (
+            "❄️ <b>Цена:</b> {kalt} € Kaltmiete + {nk} € NK"
+        ),
         "card_letter": "✉️ <b>Сопроводительное письмо (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -508,6 +524,14 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
         "source_wggesucht": "WG-Gesucht",
+        "card_price_warm_detail": (
+            "💰 <b>Price:</b> {warm} € Warmmiete ({kalt} € Kalt + {nk} € NK)"
+        ),
+        "card_price_warm_only": "🔥 <b>Price:</b> {warm} € Warmmiete",
+        "card_price_kalt_only": "❄️ <b>Price:</b> {kalt} € Kaltmiete (+ utilities)",
+        "card_price_kalt_with_nk": (
+            "❄️ <b>Price:</b> {kalt} € Kaltmiete + {nk} € NK"
+        ),
         "card_letter": "✉️ <b>Cover letter (Anschreiben)</b>",
         "btn_open": "🔗 Open",
         "ai_limit_reached": (

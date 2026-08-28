@@ -14,6 +14,7 @@ from database.db import (
     toggle_auto_search,
     update_user_language,
     upsert_listings,
+    fetch_recent_listings_for_dedup,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "count_ai_calls_today",
     "register_ai_call",
     "upsert_listings",
+    "fetch_recent_listings_for_dedup",
 ]

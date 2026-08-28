@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from config import Settings, get_settings
 from database import init_db
 from handlers import get_routers
+from services.alerts import init_alert_bot
 from services.scheduler import create_scheduler, shutdown_scheduler
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ async def main() -> None:
         logger.info("Бот @%s запущен, БД: %s", me.username, settings.db_file)
         await setup_bot_commands(bot)
         scheduler = create_scheduler(bot)
+        init_alert_bot(bot)
 
         # Пропускаем накопившиеся апдейты, чтобы не отвечать на старые сообщения.
         await bot.delete_webhook(drop_pending_updates=True)

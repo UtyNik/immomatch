@@ -15,6 +15,8 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from scrapers.kleinanzeigen import resolve_warm_rent
+from services.alerts import alert_blocked_html, alert_http_status, alert_parse_failure
+from services.http_politeness import detect_block_reason, polite_delay
 from services.listing_time import (
     parse_german_listing_date,
     parse_iso_from_html,
@@ -90,6 +92,20 @@ _EXPOSE_ID = re.compile(
 )
 
 
+async def _fetch_html(client: httpx.AsyncClient, url: str) -> str:
+    """GET с паузой и проверкой CAPTCHA / rate limit."""
+    await polite_delay()
+    response = await client.get(url)
+    if response.status_code in (403, 429):
+        await alert_http_status("immowelt", response.status_code, url=url)
+    response.raise_for_status()
+    block = detect_block_reason(response.text)
+    if block:
+        await alert_blocked_html("immowelt", response.text, context=url)
+        raise RuntimeError(f"Immowelt: {block} на {url}")
+    return response.text
+
+
 class ImmoweltProvider(BaseProvider):
     name = "immowelt"
 
@@ -114,17 +130,36 @@ class ImmoweltProvider(BaseProvider):
             for page in range(1, max_pages + 1):
                 page_url = url if page == 1 else f"{url}&page={page}"
                 try:
-                    response = await client.get(page_url)
-                    response.raise_for_status()
+                    html = await _fetch_html(client, page_url)
+                except httpx.HTTPStatusError as error:
+                    status = error.response.status_code
+                    if page == 1:
+                        if status in (403, 429):
+                            await alert_http_status("immowelt", status, url=page_url)
+                        raise RuntimeError(f"Immowelt недоступен: {error}") from error
+                    logger.warning("Immowelt: страница %d недоступна: %s", page, error)
+                    break
                 except httpx.HTTPError as error:
                     if page == 1:
                         raise RuntimeError(f"Immowelt недоступен: {error}") from error
                     logger.warning("Immowelt: страница %d недоступна: %s", page, error)
                     break
 
-                batch = _parse_search_html(response.text)
+                batch = _parse_search_html(html)
                 if not batch and page == 1:
-                    batch = _parse_next_data(response.text)
+                    batch = _parse_next_data(html)
+                if not batch and page == 1:
+                    if detect_block_reason(html):
+                        await alert_blocked_html(
+                            "immowelt",
+                            html,
+                            context="пустая выдача на первой странице",
+                        )
+                    elif "classified-card" in html or "cardmfe" in html:
+                        await alert_parse_failure(
+                            "immowelt",
+                            detail="карточки в HTML есть, парсер вернул 0",
+                        )
                 added = 0
                 for item in batch:
                     if item.id in seen_ids:
@@ -552,20 +587,22 @@ async def _load_one(
 ) -> None:
     async with semaphore:
         try:
-            response = await client.get(listing.url)
-            response.raise_for_status()
+            html = await _fetch_html(client, listing.url)
         except httpx.HTTPError as error:
             logger.warning(
                 "Immowelt: страница %s недоступна (%s)", listing.id, error
             )
             return
+        except RuntimeError as error:
+            logger.warning("Immowelt: %s", error)
+            return
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     desc_node = soup.select_one('[data-testid*="description"]')
     if desc_node is not None:
         listing.description = " ".join(desc_node.get_text(" ", strip=True).split())
 
-    blob = response.text
+    blob = html
     warm, kalt, neben = _extract_rent_from_expose(soup, blob)
     resolved = resolve_warm_rent(listing.price, warm, kalt, neben)
     if resolved is not None:
@@ -587,6 +624,11 @@ async def _load_one(
         label_hint=str(listing.raw_data.get("price_text") or listing.title or ""),
         default=str(listing.raw_data.get("price_kind") or "unknown"),
     )
+    listing.raw_data["rent_breakdown"] = {
+        "warm": warm,
+        "kalt": kalt,
+        "neben": neben,
+    }
 
     if listing.rooms is None:
         room_match = _ROOMS.search(blob[:8000])
@@ -597,7 +639,7 @@ async def _load_one(
         if sqm_match:
             listing.size_sqm = parse_sqm(sqm_match.group(0))
 
-    next_items = _parse_next_data(response.text)
+    next_items = _parse_next_data(html)
     if next_items and next_items[0].description and not listing.description:
         listing.description = next_items[0].description
     if next_items and next_items[0].published_at and not listing.published_at:

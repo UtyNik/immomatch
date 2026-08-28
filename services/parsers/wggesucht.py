@@ -14,6 +14,8 @@ from urllib.parse import urlencode
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from services.alerts import alert_blocked_html, alert_http_status
+from services.http_politeness import detect_block_reason, polite_delay
 from services.listing_time import parse_german_listing_date
 from services.parsers.base import BaseProvider, ListingData
 from validators import infer_price_kind, parse_amount, parse_first_amount, parse_number, parse_sqm
@@ -31,6 +33,11 @@ MAX_CONCURRENCY: Final[int] = 3
 SITEMAP_CACHE_TTL: Final[float] = 3600.0
 MAX_SITEMAP_SCAN: Final[int] = 400
 MAX_SITEMAP_API_CALLS: Final[int] = 60
+_RADIUS_EXPAND_THRESHOLD: Final[int] = 8
+_MAX_RADIUS_CITIES: Final[int] = 12
+_NOMINATIM_URL: Final[str] = "https://nominatim.openstreetmap.org/search"
+_OVERPASS_URL: Final[str] = "https://overpass-api.de/api/interpreter"
+_GEOCODE_UA: Final[str] = "ImmomatchBot/1.0 (wg-gesucht radius lookup)"
 
 _HEADERS: dict[str, str] = {
     "User-Agent": (
@@ -77,6 +84,8 @@ _SITEMAP_LINE = re.compile(
 
 _sitemap_cache: tuple[float, str] | None = None
 _sitemap_lock = asyncio.Lock()
+_geocode_cache: dict[str, tuple[float, float] | None] = {}
+_nearby_names_cache: dict[tuple[str, int], list[str]] = {}
 
 _ROOMS_IN_TEXT = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*[-\s]?Zimmer|Einzimmer",
@@ -89,6 +98,7 @@ class _CityInfo:
     city_id: str
     city_name: str
     slug: str
+    federated_state_id: str = ""
 
 
 class WGGesuchtProvider(BaseProvider):
@@ -99,6 +109,7 @@ class WGGesuchtProvider(BaseProvider):
         max_pages = max(1, int(search_criteria.get("max_pages") or 1))
         budget_max = search_criteria.get("budget_max")
         rooms_min = search_criteria.get("rooms_min")
+        radius = int(search_criteria.get("radius") or 0)
 
         listings: list[ListingData] = []
         seen_ids: set[str] = set()
@@ -113,74 +124,63 @@ class WGGesuchtProvider(BaseProvider):
             if city_info is None:
                 raise RuntimeError(f"WG-Gesucht: город не найден — {city!r}")
 
+            search_cities = [city_info]
             categories = _categories_for_search(rooms_min)
-            for category_code, category_slug in categories:
-                for page in range(1, max_pages + 1):
-                    url = build_search_url(
-                        city_info,
-                        category_code=category_code,
-                        category_slug=category_slug,
-                        page=page,
-                        budget_max=budget_max,
-                    )
-                    try:
-                        response = await client.get(url)
-                        response.raise_for_status()
-                    except httpx.HTTPError as error:
-                        if page == 1:
-                            logger.warning(
-                                "WG-Gesucht: %s/%s недоступен — %s",
-                                category_slug,
-                                city_info.city_name,
-                                error,
-                            )
-                        break
 
-                    if _is_blocked_html(response.text):
-                        html_blocked = True
-                        logger.warning(
-                            "WG-Gesucht: выдача %s/%s заблокирована (CAPTCHA) — "
-                            "переключаюсь на sitemap+API",
-                            category_slug,
-                            city_info.city_name,
-                        )
-                        break
+            html_blocked = await _fetch_html_listings(
+                client,
+                search_cities,
+                categories=categories,
+                max_pages=max_pages,
+                budget_max=budget_max,
+                seen_ids=seen_ids,
+                listings=listings,
+            )
 
-                    batch = _parse_search_html(response.text)
-                    if not batch:
-                        break
-
-                    added = 0
-                    for item in batch:
-                        if item.id in seen_ids:
-                            continue
-                        seen_ids.add(item.id)
-                        listings.append(item)
-                        added += 1
-
+            if radius > 0 and len(listings) < _RADIUS_EXPAND_THRESHOLD:
+                extra_cities = await _resolve_radius_cities(client, city_info, radius)
+                extra_cities = [
+                    item
+                    for item in extra_cities
+                    if item.city_id != city_info.city_id
+                    and item.city_id not in {c.city_id for c in search_cities}
+                ]
+                if extra_cities:
                     logger.info(
-                        "WG-Gesucht: %s стр. %d, +%d (всего %d)",
-                        category_slug,
-                        page,
-                        added,
+                        "WG-Gesucht: мало объявлений в %s (%d) — расширяю радиус %d км "
+                        "на %d локаций",
+                        city_info.city_name,
                         len(listings),
+                        radius,
+                        len(extra_cities),
                     )
-                    if added == 0:
-                        break
-                    if page < max_pages:
-                        await asyncio.sleep(0.8)
-
-                if html_blocked:
-                    break
+                    search_cities.extend(extra_cities)
+                    blocked = await _fetch_html_listings(
+                        client,
+                        extra_cities,
+                        categories=categories,
+                        max_pages=max_pages,
+                        budget_max=budget_max,
+                        seen_ids=seen_ids,
+                        listings=listings,
+                    )
+                    html_blocked = html_blocked or blocked
 
             if not listings or html_blocked:
+                sitemap_cities = list(search_cities)
+                if radius > 0 and len(sitemap_cities) == 1:
+                    extra = await _resolve_radius_cities(client, city_info, radius)
+                    for item in extra:
+                        if item.city_id not in {c.city_id for c in sitemap_cities}:
+                            sitemap_cities.append(item)
+
                 fallback = await _fetch_via_sitemap(
                     client,
-                    city_info,
+                    sitemap_cities,
                     city_query=city,
                     budget_max=budget_max,
                     rooms_min=rooms_min,
-                    radius=int(search_criteria.get("radius") or 0),
+                    radius=radius,
                 )
                 added = 0
                 for item in fallback:
@@ -224,6 +224,104 @@ class WGGesuchtProvider(BaseProvider):
             await asyncio.gather(
                 *(_load_one(client, listing, semaphore) for listing in pending)
             )
+
+
+async def _fetch_html_listings(
+    client: httpx.AsyncClient,
+    cities: list[_CityInfo],
+    *,
+    categories: list[tuple[str, str]],
+    max_pages: int,
+    budget_max: Any,
+    seen_ids: set[str],
+    listings: list[ListingData],
+) -> bool:
+    """HTML-выдача по списку городов. True, если хотя бы раз был CAPTCHA."""
+    html_blocked = False
+
+    for city_info in cities:
+        for category_code, category_slug in categories:
+            for page in range(1, max_pages + 1):
+                url = build_search_url(
+                    city_info,
+                    category_code=category_code,
+                    category_slug=category_slug,
+                    page=page,
+                    budget_max=budget_max,
+                )
+                try:
+                    await polite_delay()
+                    response = await client.get(url)
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as error:
+                    status = error.response.status_code
+                    if status in (403, 429):
+                        await alert_http_status("wggesucht", status, url=url)
+                    if page == 1:
+                        logger.warning(
+                            "WG-Gesucht: %s/%s недоступен — %s",
+                            category_slug,
+                            city_info.city_name,
+                            error,
+                        )
+                    break
+                except httpx.HTTPError as error:
+                    if page == 1:
+                        logger.warning(
+                            "WG-Gesucht: %s/%s недоступен — %s",
+                            category_slug,
+                            city_info.city_name,
+                            error,
+                        )
+                    break
+
+                if _is_blocked_html(response.text):
+                    html_blocked = True
+                    await alert_blocked_html(
+                        "wggesucht",
+                        response.text,
+                        context=f"{category_slug}/{city_info.city_name}",
+                    )
+                    logger.warning(
+                        "WG-Gesucht: выдача %s/%s заблокирована (CAPTCHA) — "
+                        "переключаюсь на sitemap+API",
+                        category_slug,
+                        city_info.city_name,
+                    )
+                    break
+
+                batch = _parse_search_html(response.text)
+                if not batch:
+                    break
+
+                added = 0
+                for item in batch:
+                    if item.id in seen_ids:
+                        continue
+                    seen_ids.add(item.id)
+                    item.raw_data["search_city"] = city_info.city_name
+                    listings.append(item)
+                    added += 1
+
+                logger.info(
+                    "WG-Gesucht: %s/%s стр. %d, +%d (всего %d)",
+                    category_slug,
+                    city_info.city_name,
+                    page,
+                    added,
+                    len(listings),
+                )
+                if added == 0:
+                    break
+                if page < max_pages:
+                    await asyncio.sleep(0.8)
+
+            if html_blocked:
+                break
+        if html_blocked:
+            break
+
+    return html_blocked
 
 
 def city_to_slug(city: str) -> str:
@@ -292,6 +390,7 @@ async def _resolve_city(client: httpx.AsyncClient, city: str) -> _CityInfo | Non
 
     for candidate in _city_query_variants(query):
         try:
+            await polite_delay(min_sec=0.8, max_sec=1.5)
             response = await client.get(
                 f"{BASE_URL}/api/location/cities/names/{candidate}",
                 headers=_API_HEADERS,
@@ -317,8 +416,142 @@ async def _resolve_city(client: httpx.AsyncClient, city: str) -> _CityInfo | Non
             city_id=city_id,
             city_name=city_name,
             slug=city_to_slug(city_name),
+            federated_state_id=str(best.get("federated_state_id") or "").strip(),
         )
     return None
+
+
+async def _geocode_city(
+    client: httpx.AsyncClient,
+    city_name: str,
+    *,
+    country: str = "Germany",
+) -> tuple[float, float] | None:
+    """Координаты города через Nominatim (кэш в памяти)."""
+    key = city_name.strip().casefold()
+    if key in _geocode_cache:
+        return _geocode_cache[key]
+
+    try:
+        await polite_delay(min_sec=1.0, max_sec=1.5)
+        response = await client.get(
+            _NOMINATIM_URL,
+            params={
+                "city": city_name,
+                "country": country,
+                "format": "json",
+                "limit": 1,
+            },
+            headers={"User-Agent": _GEOCODE_UA},
+            timeout=15.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as error:
+        logger.debug("Nominatim %r: %s", city_name, error)
+        _geocode_cache[key] = None
+        return None
+
+    if not isinstance(payload, list) or not payload:
+        _geocode_cache[key] = None
+        return None
+
+    first = payload[0]
+    if not isinstance(first, dict):
+        _geocode_cache[key] = None
+        return None
+
+    try:
+        coords = (float(first["lat"]), float(first["lon"]))
+    except (KeyError, TypeError, ValueError):
+        _geocode_cache[key] = None
+        return None
+
+    _geocode_cache[key] = coords
+    return coords
+
+
+async def _nearby_place_names(
+    client: httpx.AsyncClient,
+    lat: float,
+    lon: float,
+    radius_km: int,
+) -> list[str]:
+    """Населённые пункты в радиусе через Overpass API."""
+    cache_key = (f"{lat:.4f},{lon:.4f}", radius_km)
+    if cache_key in _nearby_names_cache:
+        return _nearby_names_cache[cache_key]
+
+    radius_m = max(radius_km, 1) * 1000
+    query = (
+        f"[out:json][timeout:25];("
+        f'node["place"~"^(city|town|village)$"]["name"]'
+        f"(around:{radius_m},{lat},{lon});"
+        f");out body;"
+    )
+    names: list[str] = []
+    try:
+        await polite_delay(min_sec=1.0, max_sec=1.5)
+        response = await client.post(
+            _OVERPASS_URL,
+            data={"data": query},
+            headers={"User-Agent": _GEOCODE_UA},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        elements = payload.get("elements") if isinstance(payload, dict) else None
+        if isinstance(elements, list):
+            for element in elements:
+                if not isinstance(element, dict):
+                    continue
+                tags = element.get("tags")
+                if not isinstance(tags, dict):
+                    continue
+                name = str(tags.get("name") or "").strip()
+                if name and name not in names:
+                    names.append(name)
+    except httpx.HTTPError as error:
+        logger.warning("Overpass nearby %d км: %s", radius_km, error)
+
+    _nearby_names_cache[cache_key] = names
+    return names
+
+
+async def _resolve_radius_cities(
+    client: httpx.AsyncClient,
+    primary: _CityInfo,
+    radius_km: int,
+) -> list[_CityInfo]:
+    """Соседние города WG-Gesucht в пределах радиуса Umkreis."""
+    if radius_km <= 0:
+        return []
+
+    coords = await _geocode_city(client, primary.city_name)
+    if coords is None:
+        return []
+
+    lat, lon = coords
+    names = await _nearby_place_names(client, lat, lon, radius_km)
+    resolved: list[_CityInfo] = []
+    seen_ids: set[str] = {primary.city_id}
+
+    for name in names[: _MAX_RADIUS_CITIES * 2]:
+        city = await _resolve_city(client, name)
+        if city is None or city.city_id in seen_ids:
+            continue
+        if (
+            primary.federated_state_id
+            and city.federated_state_id
+            and city.federated_state_id != primary.federated_state_id
+        ):
+            continue
+        seen_ids.add(city.city_id)
+        resolved.append(city)
+        if len(resolved) >= _MAX_RADIUS_CITIES:
+            break
+
+    return resolved
 
 
 def _city_query_variants(city: str) -> list[str]:
@@ -333,12 +566,13 @@ def _city_query_variants(city: str) -> list[str]:
 
 def _is_blocked_html(html: str) -> bool:
     """Cloudflare/CAPTCHA вместо списка объявлений."""
+    if detect_block_reason(html):
+        return True
     if not html:
         return True
-    low = html.casefold()
     if ".offer_list_item" in html or "data-id=" in html:
         return False
-    return "captcha" in low or "cf-browser-verification" in low
+    return False
 
 
 def _parse_search_html(html: str) -> list[ListingData]:
@@ -496,7 +730,10 @@ async def _get_sitemap_xml(client: httpx.AsyncClient) -> str:
             if now - cached_at < SITEMAP_CACHE_TTL:
                 return content
 
+        await polite_delay()
         response = await client.get(SITEMAP_URL, headers=_API_HEADERS, timeout=SITEMAP_TIMEOUT)
+        if response.status_code in (403, 429):
+            await alert_http_status("wggesucht", response.status_code, url=SITEMAP_URL)
         response.raise_for_status()
         content = gzip.decompress(response.content).decode("utf-8", errors="replace")
         _sitemap_cache = (time.monotonic(), content)
@@ -615,6 +852,7 @@ def _passes_api_filters(
     data: dict[str, Any],
     *,
     city_info: _CityInfo,
+    allowed_city_ids: set[str] | None,
     budget_max: Any,
     rooms_min: Any,
     radius: int,
@@ -622,7 +860,11 @@ def _passes_api_filters(
     if not _category_allowed(data.get("category"), rooms_min):
         return False
 
-    if radius <= 0 and str(data.get("city_id") or "") != city_info.city_id:
+    offer_city_id = str(data.get("city_id") or "")
+    if radius <= 0:
+        if offer_city_id and offer_city_id != city_info.city_id:
+            return False
+    elif allowed_city_ids and offer_city_id and offer_city_id not in allowed_city_ids:
         return False
 
     price, _kind = _api_price(data)
@@ -702,6 +944,9 @@ def _listing_from_api_data(
 
     edited = str(data.get("date_edited") or data.get("date_created") or "")
     published = parse_german_listing_date(edited)
+    warm_val = _float_or_none(data.get("total_costs"))
+    kalt_val = _float_or_none(data.get("rent_costs"))
+    nk_val = _float_or_none(data.get("utility_costs"))
 
     return ListingData(
         id=offer_id,
@@ -719,6 +964,11 @@ def _listing_from_api_data(
             "price_kind": price_kind,
             "api_loaded": True,
             "source": "sitemap",
+            "rent_breakdown": {
+                "warm": int(round(warm_val)) if warm_val is not None else None,
+                "kalt": int(round(kalt_val)) if kalt_val is not None else None,
+                "neben": int(round(nk_val)) if nk_val is not None else None,
+            },
             "api": {
                 "rent_costs": data.get("rent_costs"),
                 "total_costs": data.get("total_costs"),
@@ -726,6 +976,9 @@ def _listing_from_api_data(
                 "category": data.get("category"),
                 "number_of_rooms": data.get("number_of_rooms"),
                 "city_id": data.get("city_id"),
+                "rent_type": data.get("rent_type"),
+                "available_from_date": data.get("available_from_date"),
+                "available_to_date": data.get("available_to_date"),
             },
         },
     )
@@ -740,10 +993,17 @@ async def _fetch_offer_api(
 ) -> dict[str, Any] | None:
     async with semaphore:
         try:
+            await polite_delay(min_sec=0.8, max_sec=1.5)
             response = await client.get(
                 f"{BASE_URL}/api/offers/{offer_id}",
                 headers=_API_HEADERS,
             )
+            if response.status_code in (403, 429):
+                await alert_http_status(
+                    "wggesucht",
+                    response.status_code,
+                    url=f"{BASE_URL}/api/offers/{offer_id}",
+                )
             response.raise_for_status()
         except httpx.HTTPError as error:
             logger.debug("WG-Gesucht API %s: %s", offer_id, error)
@@ -754,7 +1014,7 @@ async def _fetch_offer_api(
 
 async def _fetch_via_sitemap(
     client: httpx.AsyncClient,
-    city_info: _CityInfo,
+    cities: list[_CityInfo],
     *,
     city_query: str,
     budget_max: Any,
@@ -762,13 +1022,25 @@ async def _fetch_via_sitemap(
     radius: int,
 ) -> list[ListingData]:
     """Обход CAPTCHA: ID из sitemap, детали через /api/offers/{id}."""
+    if not cities:
+        return []
+
+    primary = cities[0]
     try:
         xml = await _get_sitemap_xml(client)
     except httpx.HTTPError as error:
         logger.warning("WG-Gesucht: sitemap недоступен — %s", error)
         return []
 
-    tokens = _city_match_tokens(city_info, city_query)
+    tokens: list[str] = []
+    seen_tokens: set[str] = set()
+    for city in cities:
+        for token in _city_match_tokens(city, city_query):
+            if token not in seen_tokens:
+                seen_tokens.add(token)
+                tokens.append(token)
+
+    allowed_city_ids = {city.city_id for city in cities}
     categories = _sitemap_category_slugs(rooms_min)
     candidates = _collect_sitemap_candidates(
         xml,
@@ -776,10 +1048,11 @@ async def _fetch_via_sitemap(
         category_slugs=categories,
     )
     logger.info(
-        "WG-Gesucht: sitemap нашёл %d кандидатов для %s (токены %s)",
+        "WG-Gesucht: sitemap нашёл %d кандидатов для %s (локаций %d, токены %s)",
         len(candidates),
-        city_info.city_name,
-        tokens[:4],
+        primary.city_name,
+        len(cities),
+        tokens[:6],
     )
     if not candidates:
         return []
@@ -797,7 +1070,8 @@ async def _fetch_via_sitemap(
             continue
         if not _passes_api_filters(
             data,
-            city_info=city_info,
+            city_info=primary,
+            allowed_city_ids=allowed_city_ids,
             budget_max=budget_max,
             rooms_min=rooms_min,
             radius=radius,
@@ -864,6 +1138,11 @@ def _apply_api_data(listing: ListingData, data: dict[str, Any]) -> None:
         listing.url = _build_offer_url(data)
 
     listing.raw_data["api_loaded"] = True
+    listing.raw_data["rent_breakdown"] = {
+        "warm": int(round(warm)) if warm is not None else None,
+        "kalt": int(round(rent)) if rent is not None else None,
+        "neben": int(round(utility)) if utility is not None else None,
+    }
     listing.raw_data["api"] = {
         "rent_costs": data.get("rent_costs"),
         "total_costs": data.get("total_costs"),
@@ -871,6 +1150,9 @@ def _apply_api_data(listing: ListingData, data: dict[str, Any]) -> None:
         "category": data.get("category"),
         "number_of_rooms": data.get("number_of_rooms"),
         "city_id": data.get("city_id"),
+        "rent_type": data.get("rent_type"),
+        "available_from_date": data.get("available_from_date"),
+        "available_to_date": data.get("available_to_date"),
     }
 
 
@@ -881,7 +1163,14 @@ async def _load_one(
 ) -> None:
     async with semaphore:
         try:
+            await polite_delay(min_sec=0.8, max_sec=1.5)
             response = await client.get(f"{BASE_URL}/api/offers/{listing.id}")
+            if response.status_code in (403, 429):
+                await alert_http_status(
+                    "wggesucht",
+                    response.status_code,
+                    url=f"{BASE_URL}/api/offers/{listing.id}",
+                )
             response.raise_for_status()
         except httpx.HTTPError as error:
             logger.warning(

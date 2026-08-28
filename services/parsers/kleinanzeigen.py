@@ -67,6 +67,9 @@ class KleinanzeigenProvider(BaseProvider):
             listing.description = str(enriched.get("description") or "")
             listing.raw_data["distance_km"] = enriched.get("distance_km")
             listing.raw_data["price_kind"] = enriched.get("price_kind") or "kalt"
+            breakdown = enriched.get("rent_breakdown")
+            if breakdown:
+                listing.raw_data["rent_breakdown"] = breakdown
             if enriched.get("landlord_contact"):
                 listing.raw_data["landlord_contact"] = enriched.get("landlord_contact")
             if enriched.get("published_at"):
