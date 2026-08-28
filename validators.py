@@ -14,6 +14,10 @@ BUDGET_MIN: Final[int] = 100
 BUDGET_MAX: Final[int] = 20_000
 # Ниже этого Warmmiete почти наверняка цена за сутки / Ferienwohnung, не аренда.
 MIN_PLAUSIBLE_RENT: Final[int] = 100
+# Если указана только Kaltmiete, отсекаем объявления близко к бюджету Warmmiete:
+# Nebenkosten почти наверняка выведут итог за лимит.
+KALT_BUDGET_BUFFER_MIN: Final[int] = 120
+KALT_BUDGET_BUFFER_RATIO: Final[float] = 0.15
 ROOMS_MIN: Final[float] = 1.0
 ROOMS_MAX: Final[float] = 10.0
 HOUSEHOLD_MIN: Final[int] = 1
@@ -64,6 +68,20 @@ def parse_number(raw: str) -> float | None:
     if not _NUMBER.fullmatch(text):
         return None
     return float(text)
+
+
+_EURO_AMOUNT_IN_TEXT = re.compile(
+    r"(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?)\s*(?:€|eur\b)",
+    re.IGNORECASE,
+)
+
+
+def parse_first_amount(raw: str) -> int | None:
+    """Первая сумма в строке: «750 € Kaltmiete», «Warmmiete 1.050 €»."""
+    match = _EURO_AMOUNT_IN_TEXT.search(raw)
+    if match is not None:
+        return parse_amount(match.group(1))
+    return parse_amount(raw)
 
 
 def parse_amount(raw: str) -> int | None:
@@ -175,6 +193,53 @@ def parse_listing_distance_km(text: object) -> float | None:
         return float(match.group(1).replace(",", "."))
     except ValueError:
         return None
+
+
+def infer_price_kind(
+    *,
+    warm: int | None = None,
+    kalt: int | None = None,
+    neben: int | None = None,
+    label_hint: str | None = None,
+    default: str = "unknown",
+) -> str:
+    """warm / kalt / unknown — по явным полям или подписи «Warmmiete» / «Kaltmiete»."""
+    if label_hint:
+        low = label_hint.casefold()
+        if "warmmiete" in low:
+            return "warm"
+        if "kaltmiete" in low:
+            return "kalt"
+    if warm is not None:
+        return "warm"
+    if kalt is not None and neben is not None:
+        return "warm"
+    if kalt is not None:
+        return "kalt"
+    return default
+
+
+def kalt_only_budget_reason(
+    budget_max: object, price: object, price_kind: object
+) -> str | None:
+    """Отсекает Kaltmiete, которая уже почти равна бюджету Warmmiete."""
+    if price_kind != "kalt":
+        return None
+    try:
+        budget = int(budget_max)  # type: ignore[arg-type]
+        rent = int(price)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    buffer = max(KALT_BUDGET_BUFFER_MIN, int(budget * KALT_BUDGET_BUFFER_RATIO))
+    threshold = budget - buffer
+    if rent > threshold:
+        return (
+            f"указана только Kaltmiete {rent} € — при бюджете {budget} € Warmmiete "
+            f"итог, скорее всего, превысит лимит"
+        )
+    return None
 
 
 def city_mismatch_reason(

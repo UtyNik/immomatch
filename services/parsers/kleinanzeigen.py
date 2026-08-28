@@ -7,6 +7,7 @@ from typing import Any
 
 from scrapers import ScraperError, fetch_listing_cards, load_listing_details
 from services.parsers.base import BaseProvider, ListingData, listing_to_legacy_dict
+from services.listing_time import parse_iso_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,11 @@ class KleinanzeigenProvider(BaseProvider):
                 image_url=None,
                 source_platform=self.name,
                 description=str(card.get("description") or ""),
+                published_at=parse_iso_timestamp(card.get("published_at")),
                 raw_data={
                     "distance_km": card.get("distance_km"),
+                    "price_kind": card.get("price_kind") or "kalt",
+                    "landlord_contact": card.get("landlord_contact"),
                     "card": card,
                 },
             )
@@ -62,3 +66,8 @@ class KleinanzeigenProvider(BaseProvider):
             listing.location = enriched.get("address")
             listing.description = str(enriched.get("description") or "")
             listing.raw_data["distance_km"] = enriched.get("distance_km")
+            listing.raw_data["price_kind"] = enriched.get("price_kind") or "kalt"
+            if enriched.get("landlord_contact"):
+                listing.raw_data["landlord_contact"] = enriched.get("landlord_contact")
+            if enriched.get("published_at"):
+                listing.published_at = parse_iso_timestamp(enriched.get("published_at"))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -22,6 +23,7 @@ class ListingData:
     source_platform: str
     raw_data: dict[str, Any] = field(default_factory=dict)
     description: str = ""
+    published_at: datetime | None = None
 
 
 class BaseProvider(ABC):
@@ -46,6 +48,7 @@ def listing_to_legacy_dict(listing: ListingData) -> dict[str, Any]:
     """Преобразует DTO в словарь, который понимают фильтры, AI и карточка."""
     address = listing.location or ""
     distance_km = listing.raw_data.get("distance_km")
+    published_at = listing.published_at
     return {
         "external_id": listing.id,
         "source": listing.source_platform,
@@ -59,6 +62,9 @@ def listing_to_legacy_dict(listing: ListingData) -> dict[str, Any]:
         "link": listing.url,
         "image_url": listing.image_url,
         "description": listing.description or "",
+        "published_at": published_at.isoformat() if published_at else None,
+        "price_kind": listing.raw_data.get("price_kind") or "unknown",
+        "landlord_contact": listing.raw_data.get("landlord_contact"),
         "raw_data": listing.raw_data,
     }
 

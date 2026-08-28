@@ -35,6 +35,7 @@ from services import (
     shared_wg_reason,
 )
 from services.parsers.base import legacy_dict_storage_id
+from services.listing_time import format_published_ago
 from services.search_orchestrator import get_search_orchestrator
 from services.translator import normalize_and_translate_user_input
 from texts import DEFAULT_LANG, t
@@ -42,6 +43,7 @@ from validators import (
     MIN_PLAUSIBLE_RENT,
     area_is_too_small,
     city_mismatch_reason,
+    kalt_only_budget_reason,
     parse_search_radius,
 )
 
@@ -102,6 +104,12 @@ def hard_filter_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> st
         return f"цена {price} € слишком низкая для долгосрочной аренды"
     if budget is not None and price is not None and price > budget:
         return f"цена {price} € > бюджет {budget} €"
+
+    kalt_reason = kalt_only_budget_reason(
+        budget, price, apartment.get("price_kind")
+    )
+    if kalt_reason is not None:
+        return kalt_reason
 
     rooms_min = profile.get("rooms_min")
     rooms = apartment.get("rooms")
@@ -194,6 +202,9 @@ def render_listing_card(
     lines = [f"🏠 [{source_label}] <b>{html.quote(title)}</b>"]
     if facts:
         lines.append(" · ".join(facts))
+    published_line = format_published_ago(apartment.get("published_at"), lang)
+    if published_line:
+        lines.append(published_line)
     lines.append("")
     lines.append(verdict_title)
 

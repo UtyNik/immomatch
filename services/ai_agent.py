@@ -18,7 +18,8 @@ from openai import APIError, AsyncOpenAI
 
 from config import get_settings
 from texts import DEFAULT_LANG
-from validators import area_is_too_small, city_mismatch_reason, parse_search_radius
+from validators import area_is_too_small, city_mismatch_reason, kalt_only_budget_reason, parse_search_radius
+from services.salutation import apply_letter_salutation, salutation_from_listing
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +147,10 @@ You write German cover letters (Anschreiben) for apartment hunters.
 You receive a tenant profile and a listing the tenant wants to apply for.
 Answer with JSON only: {{"anschreiben": "..."}}
 
-The letter must be polite, flawless German of 80-150 words, addressed with
-"Sehr geehrte Damen und Herren". Sign it exactly:
+The letter must be polite, flawless German of 80-150 words.
+
+Start the letter with listing.salutation exactly as given in the JSON payload.
+Do not replace it with another greeting. Sign it exactly:
 
 Mit freundlichen Grüßen,
 {first_name} {last_name}
@@ -450,6 +453,7 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "notes": user_profile.get("custom_notes"),
     }
     net_income = _optional_net_income(user_profile.get("net_income"))
+    salutation = salutation_from_listing(apartment)
 
     payload = {
         # Пустые поля выбрасываем: пара «ключ: null» подталкивает модель
@@ -462,12 +466,15 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "listing": {
             "title": apartment.get("title"),
             "price_eur": apartment.get("price"),
+            "price_kind": apartment.get("price_kind"),
             "rooms": apartment.get("rooms"),
             "area_m2": apartment.get("sqm"),
             "address": apartment.get("address"),
             "distance_km": apartment.get("distance_km"),
             "description": description,
             "income_proof_requested": listing_requests_income_proof(apartment),
+            "landlord_contact": apartment.get("landlord_contact"),
+            "salutation": salutation,
         },
     }
     # Доход опционален: null должен дойти до модели, иначе она выдумает сумму.
@@ -820,6 +827,13 @@ async def analyze_apartment_and_generate_letter(
         logger.info("Объявление %s отклонено кодом: %s", listing_id, over)
         return {"match": False, "reason": over, "anschreiben": ""}
 
+    kalt_reason = kalt_only_budget_reason(
+        budget, price, apartment.get("price_kind")
+    )
+    if match and kalt_reason:
+        logger.info("Объявление %s отклонено кодом: %s", listing_id, kalt_reason)
+        return {"match": False, "reason": kalt_reason, "anschreiben": ""}
+
     if not match:
         logger.info("Объявление %s отклонено: %s", listing_id, reason)
         return {"match": False, "reason": reason, "anschreiben": ""}
@@ -835,6 +849,7 @@ async def analyze_apartment_and_generate_letter(
         letter = ""
 
     letter = apply_letter_income_policy(letter, user_profile, apartment)
+    letter = apply_letter_salutation(letter, salutation_from_listing(apartment))
     letter = apply_letter_signature(letter, user_profile)
     logger.info("Объявление %s подошло, длина письма %d", listing_id, len(letter))
     return {"match": True, "reason": reason, "anschreiben": letter}

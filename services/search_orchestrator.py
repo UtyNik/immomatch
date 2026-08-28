@@ -12,8 +12,10 @@ from services.parsers.base import (
     ListingData,
     listing_to_legacy_dict,
 )
+from services.listing_time import parse_iso_timestamp
 from services.parsers.immowelt import ImmoweltProvider
 from services.parsers.kleinanzeigen import KleinanzeigenProvider
+from services.parsers.wggesucht import WGGesuchtProvider
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ class SearchOrchestrator:
         self.providers = providers or [
             KleinanzeigenProvider(),
             ImmoweltProvider(),
+            WGGesuchtProvider(),
         ]
         self._by_name = {provider.name: provider for provider in self.providers}
 
@@ -123,6 +126,12 @@ class SearchOrchestrator:
 
 
 def _legacy_to_listing_data(item: dict[str, Any]) -> ListingData:
+    published = item.get("published_at")
+    published_at = (
+        parse_iso_timestamp(str(published))
+        if published
+        else None
+    )
     return ListingData(
         id=str(item.get("external_id") or ""),
         title=str(item.get("title") or ""),
@@ -134,6 +143,7 @@ def _legacy_to_listing_data(item: dict[str, Any]) -> ListingData:
         image_url=item.get("image_url"),
         source_platform=str(item.get("source") or "kleinanzeigen"),
         description=str(item.get("description") or ""),
+        published_at=published_at,
         raw_data=dict(item.get("raw_data") or {}),
     )
 

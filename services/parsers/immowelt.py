@@ -9,11 +9,19 @@ import re
 from typing import Any
 from urllib.parse import urlencode
 
+from datetime import datetime
+
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from scrapers.kleinanzeigen import resolve_warm_rent
+from services.listing_time import (
+    parse_german_listing_date,
+    parse_iso_from_html,
+    parse_iso_timestamp,
+)
 from services.parsers.base import BaseProvider, ListingData
-from validators import parse_amount, parse_number, parse_sqm
+from validators import infer_price_kind, parse_amount, parse_first_amount, parse_number, parse_sqm
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,34 @@ _WARM = re.compile(
 )
 _KALT = re.compile(
     r"(?:kaltmiete|kalt[\s\-]?miete)\s*[:.]?\s*(\d[\d.,]*)",
+    re.IGNORECASE,
+)
+_WARM_EURO_FIRST = re.compile(
+    r"(\d[\d.,]*)\s*€?\s*warmmiete",
+    re.IGNORECASE,
+)
+_KALT_EURO_FIRST = re.compile(
+    r"(\d[\d.,]*)\s*€?\s*kaltmiete",
+    re.IGNORECASE,
+)
+_NEBEN = re.compile(
+    r"(?:nebenkosten|betriebskosten)\s*[:.]?\s*(\d[\d.,]*)",
+    re.IGNORECASE,
+)
+_NEBEN_EURO_FIRST = re.compile(
+    r"(\d[\d.,]*)\s*€?\s*(?:nebenkosten|betriebskosten)",
+    re.IGNORECASE,
+)
+_JSON_WARM = re.compile(
+    r'"(?:warmRent|Warmmiete|warmmiete)"\s*:\s*"?(\d+)"?',
+    re.IGNORECASE,
+)
+_JSON_KALT = re.compile(
+    r'"(?:coldRent|Kaltmiete|kaltmiete|baseRent)"\s*:\s*"?(\d+)"?',
+    re.IGNORECASE,
+)
+_JSON_NEBEN = re.compile(
+    r'"(?:serviceCharge|nebenkosten|additionalCosts)"\s*:\s*"?(\d+)"?',
     re.IGNORECASE,
 )
 _EXPOSE_ID = re.compile(
@@ -214,6 +250,8 @@ def _listing_from_json_blob(raw: dict[str, Any]) -> ListingData | None:
     if not title:
         title = f"Wohnung {location or listing_id}"
 
+    published_at = _extract_published_at(raw)
+
     return ListingData(
         id=listing_id,
         title=title,
@@ -224,8 +262,23 @@ def _listing_from_json_blob(raw: dict[str, Any]) -> ListingData | None:
         url=url,
         image_url=image,
         source_platform="immowelt",
+        published_at=published_at,
         raw_data={"json": raw},
     )
+
+
+def _extract_published_at(raw: dict[str, Any]) -> datetime | None:
+    metadata = raw.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("creationDate", "publishedDate", "date"):
+            parsed = parse_iso_timestamp(str(metadata.get(key) or ""))
+            if parsed is not None:
+                return parsed
+    for key in ("creationDate", "publishedDate", "datePosted", "date"):
+        parsed = parse_iso_timestamp(str(raw.get(key) or ""))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _extract_location(raw: dict[str, Any]) -> str | None:
@@ -245,8 +298,32 @@ def _extract_location(raw: dict[str, Any]) -> str | None:
 
 
 def _extract_price(raw: dict[str, Any]) -> int | None:
-    for key in ("price", "rent", "warmRent", "coldRent", "primaryPrice"):
-        value = raw.get(key)
+    warm, kalt, neben = _extract_rent_from_json(raw)
+    return resolve_warm_rent(None, warm, kalt, neben)
+
+
+def _extract_rent_from_json(raw: dict[str, Any]) -> tuple[int | None, int | None, int | None]:
+    warm = _read_price_field(raw, "warmRent", "warmmiete", "Warmmiete")
+    kalt = _read_price_field(raw, "coldRent", "kaltmiete", "Kaltmiete", "baseRent")
+    neben = _read_price_field(
+        raw, "serviceCharge", "nebenkosten", "additionalCosts", "operatingCosts"
+    )
+    prices = raw.get("prices")
+    if isinstance(prices, dict):
+        warm = warm or _read_price_field(prices, "warmRent", "warm", "Warmmiete")
+        kalt = kalt or _read_price_field(prices, "coldRent", "cold", "Kaltmiete", "base")
+        neben = neben or _read_price_field(prices, "serviceCharge", "nebenkosten")
+    rent = raw.get("rent")
+    if isinstance(rent, dict):
+        warm = warm or _read_price_field(rent, "warm", "warmRent", "total")
+        kalt = kalt or _read_price_field(rent, "cold", "coldRent", "base")
+        neben = neben or _read_price_field(rent, "serviceCharge", "additional")
+    return warm, kalt, neben
+
+
+def _read_price_field(source: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = source.get(key)
         if isinstance(value, dict):
             for sub in ("value", "amount", "primary", "warm", "cold"):
                 parsed = parse_amount(str(value.get(sub) or ""))
@@ -256,6 +333,78 @@ def _extract_price(raw: dict[str, Any]) -> int | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _first_regex_amount(pattern: re.Pattern[str], text: str) -> int | None:
+    match = pattern.search(text)
+    if not match:
+        return None
+    return parse_amount(match.group(1))
+
+
+def _extract_rent_from_expose(
+    soup: BeautifulSoup,
+    blob: str,
+) -> tuple[int | None, int | None, int | None]:
+    """Warm/Kalt/NK со страницы expose: DOM Immowelt + JSON + текстовые fallback."""
+    warm: int | None = None
+    kalt: int | None = None
+    neben: int | None = None
+
+    for node in soup.select('[data-testid="rent-price"]'):
+        text = " ".join(node.get_text(" ", strip=True).split())
+        amount = parse_first_amount(text)
+        if amount is None:
+            continue
+        lower = text.casefold()
+        if "warmmiete" in lower:
+            warm = amount
+        elif "kaltmiete" in lower:
+            kalt = amount
+
+    if warm is None or kalt is None:
+        cdp = soup.select_one('[data-testid="cdp-price"]')
+        if cdp is not None:
+            text = " ".join(cdp.get_text(" ", strip=True).split())
+            if warm is None:
+                warm = _first_regex_amount(_WARM, text)
+                warm = warm or _first_regex_amount(_WARM_EURO_FIRST, text)
+            if kalt is None:
+                kalt = _first_regex_amount(_KALT, text)
+                kalt = kalt or _first_regex_amount(_KALT_EURO_FIRST, text)
+            if neben is None:
+                neben = _first_regex_amount(_NEBEN, text)
+                neben = neben or _first_regex_amount(_NEBEN_EURO_FIRST, text)
+
+    if warm is None:
+        warm = _first_regex_amount(_JSON_WARM, blob)
+        warm = warm or _first_regex_amount(_WARM_EURO_FIRST, blob)
+    if kalt is None:
+        kalt = _first_regex_amount(_JSON_KALT, blob)
+        kalt = kalt or _first_regex_amount(_KALT_EURO_FIRST, blob)
+    if neben is None:
+        neben = _first_regex_amount(_JSON_NEBEN, blob)
+
+    return warm, kalt, neben
+
+
+def _resolve_card_price(price_text: str | None, *context: str | None) -> int | None:
+    """Цена с SERP: Warmmiete приоритетнее Kaltmiete."""
+    chunks = [chunk for chunk in (price_text, *context) if chunk]
+    warm: int | None = None
+    kalt: int | None = None
+    for chunk in chunks:
+        text = chunk.casefold()
+        amount = parse_first_amount(chunk)
+        if amount is None:
+            continue
+        if "warmmiete" in text:
+            warm = amount
+        elif "kaltmiete" in text:
+            kalt = amount
+        elif warm is None and kalt is None:
+            kalt = amount
+    return resolve_warm_rent(None, warm, kalt, None)
 
 
 def _extract_rooms(raw: dict[str, Any]) -> float | None:
@@ -344,7 +493,13 @@ def _parse_card(card: Tag) -> ListingData | None:
         if sqm_match:
             sqm = parse_sqm(sqm_match.group(0))
 
-    price = parse_amount(price_text or "")
+    price = _resolve_card_price(price_text, description, keyfacts)
+    price_kind = infer_price_kind(
+        label_hint=" ".join(
+            chunk for chunk in (price_text, description, keyfacts) if chunk
+        ),
+        default="kalt" if price is not None else "unknown",
+    )
     title = description or keyfacts or address or f"Wohnung {address or listing_id}"
     if address and address in title:
         title = title.split(address)[0].strip() or title
@@ -353,6 +508,13 @@ def _parse_card(card: Tag) -> ListingData | None:
     image_url = None
     if image is not None:
         image_url = image.get("src") or image.get("data-src")
+
+    date_text = (
+        _text(card, '[data-testid*="date"]')
+        or _text(card, '[data-testid*="age"]')
+        or _text(card, '[data-testid*="time"]')
+    )
+    published_at = parse_german_listing_date(date_text or card.get_text(" ", strip=True))
 
     return ListingData(
         id=listing_id,
@@ -365,7 +527,13 @@ def _parse_card(card: Tag) -> ListingData | None:
         image_url=image_url if isinstance(image_url, str) else None,
         source_platform="immowelt",
         description=description or "",
-        raw_data={"keyfacts": keyfacts, "price_text": price_text},
+        published_at=published_at,
+        raw_data={
+            "keyfacts": keyfacts,
+            "price_text": price_text,
+            "date_text": date_text,
+            "price_kind": price_kind,
+        },
     )
 
 
@@ -398,14 +566,27 @@ async def _load_one(
         listing.description = " ".join(desc_node.get_text(" ", strip=True).split())
 
     blob = response.text
-    warm = _WARM.search(blob)
-    kalt = _KALT.search(blob)
-    warm_price = parse_amount(warm.group(1)) if warm else None
-    kalt_price = parse_amount(kalt.group(1)) if kalt else None
-    if warm_price is not None:
-        listing.price = warm_price
-    elif kalt_price is not None:
-        listing.price = kalt_price
+    warm, kalt, neben = _extract_rent_from_expose(soup, blob)
+    resolved = resolve_warm_rent(listing.price, warm, kalt, neben)
+    if resolved is not None:
+        if listing.price != resolved:
+            logger.info(
+                "Immowelt %s: цена %s → %s € (warm=%s kalt=%s nk=%s)",
+                listing.id,
+                listing.price,
+                resolved,
+                warm,
+                kalt,
+                neben,
+            )
+        listing.price = resolved
+    listing.raw_data["price_kind"] = infer_price_kind(
+        warm=warm,
+        kalt=kalt,
+        neben=neben,
+        label_hint=str(listing.raw_data.get("price_text") or listing.title or ""),
+        default=str(listing.raw_data.get("price_kind") or "unknown"),
+    )
 
     if listing.rooms is None:
         room_match = _ROOMS.search(blob[:8000])
@@ -419,3 +600,8 @@ async def _load_one(
     next_items = _parse_next_data(response.text)
     if next_items and next_items[0].description and not listing.description:
         listing.description = next_items[0].description
+    if next_items and next_items[0].published_at and not listing.published_at:
+        listing.published_at = next_items[0].published_at
+
+    if not listing.published_at:
+        listing.published_at = parse_iso_from_html(blob)

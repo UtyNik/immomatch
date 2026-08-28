@@ -69,7 +69,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         ),
         "ask_first_name": (
             "👤 Як вас <b>звати</b>? Напишіть ім'я.\n\n"
-            "<i>Можна українською, російською або латиницею: <code>Микита</code></i>"
+            "<i>Можна українською, російською або латиницею: <code>Олена</code></i>"
         ),
         "ask_gender": (
             "👤 Вкажіть вашу <b>стать</b> (потрібно для листа і фільтрації "
@@ -84,7 +84,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_htype_wg": "👥 Спільна оренда (WG / друзі)",
         "ask_last_name": (
             "👤 Ваше <b>прізвище</b>?\n\n"
-            "<i>Наприклад: <code>Литвинов</code></i>"
+            "<i>Наприклад: <code>Коваленко</code></i>"
         ),
         "ask_radius": "📍 У якому <b>радіусі</b> шукати оголошення?",
         "btn_radius_0": "📍 Тільки місто",
@@ -148,6 +148,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "card_match_no": "❌ <b>Не підходить</b>",
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
+        "source_wggesucht": "WG-Gesucht",
         "card_letter": "✉️ <b>Супровідний лист (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -249,7 +250,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         ),
         "ask_first_name": (
             "👤 Как вас <b>зовут</b>? Напишите имя.\n\n"
-            "<i>Можно по-русски, по-украински или латиницей: <code>Никита</code></i>"
+            "<i>Можно по-русски, по-украински или латиницей: <code>Анна</code></i>"
         ),
         "ask_gender": (
             "👤 Укажите ваш <b>пол</b> (нужно для корректного письма и фильтрации "
@@ -264,7 +265,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_htype_wg": "👥 Совместная аренда (WG / друзья)",
         "ask_last_name": (
             "👤 Ваша <b>фамилия</b>?\n\n"
-            "<i>Например: <code>Литвинов</code></i>"
+            "<i>Например: <code>Иванова</code></i>"
         ),
         "ask_radius": "📍 В каком <b>радиусе</b> искать объявления?",
         "btn_radius_0": "📍 Только город",
@@ -328,6 +329,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "card_match_no": "❌ <b>Не подходит</b>",
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
+        "source_wggesucht": "WG-Gesucht",
         "card_letter": "✉️ <b>Сопроводительное письмо (Anschreiben)</b>",
         "btn_open": "🔗 Перейти",
         "ai_limit_reached": (
@@ -430,7 +432,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         ),
         "ask_first_name": (
             "👤 What is your <b>first name</b>?\n\n"
-            "<i>Ukrainian, Russian or Latin is fine: <code>Mykyta</code></i>"
+            "<i>Ukrainian, Russian or Latin is fine: <code>Anna</code></i>"
         ),
         "ask_gender": (
             "👤 What is your <b>gender</b>? It is needed for the cover letter "
@@ -445,7 +447,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_htype_wg": "👥 Shared rent (friends / WG)",
         "ask_last_name": (
             "👤 What is your <b>last name</b>?\n\n"
-            "<i>For example: <code>Lytvynov</code></i>"
+            "<i>For example: <code>Schmidt</code></i>"
         ),
         "ask_radius": "📍 Within what <b>radius</b> should we search?",
         "btn_radius_0": "📍 City only",
@@ -505,6 +507,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "card_match_no": "❌ <b>Not a match</b>",
         "source_kleinanzeigen": "Kleinanzeigen",
         "source_immowelt": "Immowelt",
+        "source_wggesucht": "WG-Gesucht",
         "card_letter": "✉️ <b>Cover letter (Anschreiben)</b>",
         "btn_open": "🔗 Open",
         "ai_limit_reached": (

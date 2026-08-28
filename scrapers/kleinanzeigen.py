@@ -9,12 +9,20 @@ import re
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Final
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from services.listing_time import (
+    parse_german_listing_date,
+    parse_iso_from_html,
+    parse_iso_timestamp,
+)
+from services.salutation import parse_kleinanzeigen_contact
 from validators import (
+    infer_price_kind,
     parse_amount,
     parse_listing_distance_km,
     parse_number,
@@ -403,16 +411,20 @@ def _parse_card(card: Tag) -> dict[str, Any] | None:
     path = str(href)
     link = path if path.startswith("http") else f"{BASE_URL}{path}"
 
+    published_at = _card_published_at(card)
+
     return {
         "external_id": str(external_id),
         "title": title or "",
         "price": parse_amount(price_text) if price_text else None,
+        "price_kind": "kalt",
         "rooms": _rooms_from_title(title) or _rooms_from_title(facts),
         "sqm": _sqm_from_text(title) or _sqm_from_text(facts),
         "address": address,
         "distance_km": parse_listing_distance_km(address),
         "link": link,
         "description": "",
+        "published_at": published_at.isoformat() if published_at else None,
     }
 
 
@@ -468,6 +480,45 @@ def _card_address(card: Tag) -> str | None:
             if text not in parts:
                 parts.append(text)
     return " ".join(parts) or None
+
+
+def _card_published_at(card: Tag) -> datetime | None:
+    """Дата публикации с карточки: time[datetime], JSON-LD или «Heute» / «vor 2 Std.»."""
+    time_node = card.select_one("time[datetime]")
+    if time_node is not None:
+        raw = time_node.get("datetime")
+        if isinstance(raw, str):
+            parsed = parse_iso_timestamp(raw)
+            if parsed is not None:
+                return parsed
+
+    script = card.select_one("script[type='application/ld+json']")
+    raw_json = script.string if script is not None else None
+    if raw_json:
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            for key in ("datePublished", "uploadDate"):
+                stamp = payload.get(key)
+                if isinstance(stamp, str):
+                    parsed = parse_iso_timestamp(stamp)
+                    if parsed is not None:
+                        return parsed
+
+    for selector in (
+        ".aditem-main--top--right",
+        "p.text-onSurfaceSubdued",
+        "span.text-onSurfaceSubdued",
+    ):
+        text = _text_or_none(card.select_one(selector))
+        parsed = parse_german_listing_date(text)
+        if parsed is not None:
+            return parsed
+
+    card_text = card.get_text(" ", strip=True)
+    return parse_german_listing_date(card_text)
 
 
 def _rooms_from_title(title: str | None) -> float | None:
@@ -543,9 +594,32 @@ def _parse_details(html: str, listing: dict[str, Any]) -> None:
     resolved = resolve_warm_rent(listed, warm, kalt, neben)
     if resolved is not None:
         listing["price"] = resolved
+    listing["price_kind"] = infer_price_kind(
+        warm=warm,
+        kalt=kalt,
+        neben=neben,
+        default="kalt" if (kalt is not None or listed is not None) else "unknown",
+    )
+
+    contact_root = soup.select_one("#viewad-contact")
+    contact_name = _text_or_none(soup.select_one(".userprofile-vip"))
+    if contact_name:
+        commercial = bool(
+            contact_root
+            and "Gewerblicher Nutzer" in contact_root.get_text(" ", strip=True)
+        )
+        listing["landlord_contact"] = parse_kleinanzeigen_contact(
+            contact_name,
+            commercial=commercial,
+        )
 
     if listing.get("sqm") is None:
         listing["sqm"] = _sqm_from_text(listing.get("title"))
+
+    if not listing.get("published_at"):
+        stamp = parse_iso_from_html(html)
+        if stamp is not None:
+            listing["published_at"] = stamp.isoformat()
 
 
 async def _load_details(
