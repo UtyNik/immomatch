@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     ai_daily_limit: int = 20
     # Как часто фоновый автопоиск снова обходит kleinanzeigen.de.
     auto_search_interval_minutes: int = 10
+    # Сколько пользователей автопоиск обрабатывает одновременно (asyncio, не потоки).
+    auto_search_concurrency: int = 3
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

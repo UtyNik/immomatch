@@ -18,9 +18,6 @@ from texts import DEFAULT_LANG, t
 logger = logging.getLogger(__name__)
 
 _JOB_ID: Final[str] = "auto_search"
-# Пауза между пользователями: меньше шанс, что kleinanzeigen.de или Telegram
-# примут пачку запросов за флуд.
-_PAUSE_BETWEEN_USERS: Final[float] = 3.0
 
 
 def _profile_ready(profile: dict[str, Any]) -> bool:
@@ -121,20 +118,36 @@ async def run_background_search(bot: Bot) -> None:
     Для каждого пользователя — тот же конвейер, что и у ручного поиска
     (оркестратор провайдеров + фильтр + load_details + AI): на первом
     `match` рассылка этому пользователю останавливается до следующего тика.
+
+    Несколько пользователей идут параллельно (asyncio + Semaphore), а не
+    строго по очереди: при 10 пользователях и concurrency=3 цикл занимает
+    примерно втрое меньше времени, чем последовательный обход.
     """
     users = await get_auto_search_users()
-    logger.info("Автопоиск: старт, пользователей %d", len(users))
+    concurrency = max(1, int(get_settings().auto_search_concurrency))
+    logger.info(
+        "Автопоиск: старт, пользователей %d, параллельно %d",
+        len(users),
+        concurrency,
+    )
 
-    for index, profile in enumerate(users):
-        try:
-            await _search_one_user(bot, profile)
-        except Exception:
-            logger.exception(
-                "Автопоиск для пользователя %s сорвался",
-                profile.get("user_id"),
-            )
-        if index < len(users) - 1:
-            await asyncio.sleep(_PAUSE_BETWEEN_USERS)
+    if not users:
+        logger.info("Автопоиск: цикл завершён")
+        return
+
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def run_one(profile: dict[str, Any]) -> None:
+        async with semaphore:
+            try:
+                await _search_one_user(bot, profile)
+            except Exception:
+                logger.exception(
+                    "Автопоиск для пользователя %s сорвался",
+                    profile.get("user_id"),
+                )
+
+    await asyncio.gather(*(run_one(profile) for profile in users))
 
     logger.info("Автопоиск: цикл завершён")
 
