@@ -1,0 +1,23 @@
+services:
+  immomatch-bot:
+    build: .
+    container_name: immomatch-bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/data/immomatch.db
+      TZ: Europe/Berlin
+    volumes:
+      # SQLite живёт на хосте: пересборка контейнера базу не затирает.
+      - ./data:/app/data
+    # uid 1000 совпадает с appuser в Dockerfile. Каталог ./data на хосте
+    # должен быть доступен этому пользователю (см. DEPLOYMENT.md).
+    user: "1000:1000"
+    init: true
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

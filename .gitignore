@@ -1,0 +1,21 @@
+# Секреты
+.env
+
+# Виртуальные окружения
+venv/
+.venv/
+
+# Кэш Python
+__pycache__/
+
+# Базы данных SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Каталог данных на хосте (том Docker). Саму папку оставляем в git.
+data/*
+!data/.gitkeep
+
+# Системные файлы macOS
+.DS_Store
