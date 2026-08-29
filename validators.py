@@ -267,6 +267,10 @@ def city_mismatch_reason(
 
     distance = apartment.get("distance_km")
     if distance is None:
+        raw = apartment.get("raw_data")
+        if isinstance(raw, dict):
+            distance = raw.get("distance_km")
+    if distance is None:
         distance = parse_listing_distance_km(address) or parse_listing_distance_km(title)
     try:
         km = float(distance) if distance is not None else None
@@ -274,6 +278,23 @@ def city_mismatch_reason(
         km = None
     if km is not None and km > radius:
         return f"расстояние {km:g} км > радиус {radius} км ({shown})"
+
+    source = str(apartment.get("source") or "")
+    if source == "wggesucht" and radius > 0:
+        raw = apartment.get("raw_data")
+        if isinstance(raw, dict) and raw.get("outside_search_radius"):
+            return f"город {shown} вне радиуса {radius} км от {city}"
+        listing_city = primary_city_token(shown)
+        if listing_city and listing_city != token and km is None:
+            allowed_names = raw.get("allowed_wg_city_names") if isinstance(raw, dict) else None
+            if isinstance(allowed_names, list):
+                allowed_tokens = {
+                    primary_city_token(str(name)) for name in allowed_names if name
+                }
+                if listing_city not in allowed_tokens:
+                    return f"город {shown} вне зоны {city} (+{radius} км)"
+            else:
+                return f"город {shown} вне зоны {city} (+{radius} км)"
     # Umkreis: соседи (Achern, Kippenheim) — ожидаемый результат поиска.
     # На странице объявления пометки «(N km)» уже нет, карточку не режем.
     return None

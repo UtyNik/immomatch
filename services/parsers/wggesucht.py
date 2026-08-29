@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -85,7 +86,31 @@ _SITEMAP_LINE = re.compile(
 _sitemap_cache: tuple[float, str] | None = None
 _sitemap_lock = asyncio.Lock()
 _geocode_cache: dict[str, tuple[float, float] | None] = {}
-_nearby_names_cache: dict[tuple[str, int], list[str]] = {}
+_nearby_names_cache: dict[tuple[str, int], list[tuple[str, float, float]]] = {}
+_wg_city_coords_cache: dict[str, tuple[float, float] | None] = {}
+
+# Названия земель — не использовать как токены sitemap (слишком широкое совпадение).
+_STATE_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "badenwuerttemberg",
+        "badenwurttemberg",
+        "bayern",
+        "berlin",
+        "brandenburg",
+        "bremen",
+        "hamburg",
+        "hessen",
+        "mecklenburgvorpommern",
+        "niedersachsen",
+        "nordrheinwestfalen",
+        "rheinlandpfalz",
+        "saarland",
+        "sachsen",
+        "sachsenanhalt",
+        "schleswigholstein",
+        "thueringen",
+    }
+)
 
 _ROOMS_IN_TEXT = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*[-\s]?Zimmer|Einzimmer",
@@ -126,6 +151,8 @@ class WGGesuchtProvider(BaseProvider):
 
             search_cities = [city_info]
             categories = _categories_for_search(rooms_min)
+
+            center_coords = await _geocode_city(client, city_info.city_name)
 
             html_blocked = await _fetch_html_listings(
                 client,
@@ -181,12 +208,19 @@ class WGGesuchtProvider(BaseProvider):
                     budget_max=budget_max,
                     rooms_min=rooms_min,
                     radius=radius,
+                    center_coords=center_coords,
                 )
                 added = 0
                 for item in fallback:
                     if item.id in seen_ids:
                         continue
                     seen_ids.add(item.id)
+                    _apply_search_geo(
+                        item,
+                        center_coords=center_coords,
+                        radius_km=radius,
+                        allowed_cities=sitemap_cities,
+                    )
                     listings.append(item)
                     added += 1
                 logger.info(
@@ -201,6 +235,14 @@ class WGGesuchtProvider(BaseProvider):
             len(listings),
             city_info.city_name if city_info else city,
         )
+        allowed = search_cities
+        for listing in listings:
+            _apply_search_geo(
+                listing,
+                center_coords=center_coords,
+                radius_km=radius,
+                allowed_cities=allowed,
+            )
         return listings
 
     async def load_details(self, listings: list[ListingData]) -> None:
@@ -333,6 +375,132 @@ def city_to_slug(city: str) -> str:
     return slug.strip("-")
 
 
+def haversine_km(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float,
+) -> float:
+    """Расстояние между двумя точками на сфере в километрах."""
+    radius_earth_km = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    )
+    return 2 * radius_earth_km * math.asin(math.sqrt(a))
+
+
+def _pick_wg_city_match(cities: list[Any], query: str) -> dict[str, Any] | None:
+    """Выбирает город WG с точным совпадением имени, а не первый из списка."""
+    normalized = " ".join(query.split()).casefold()
+    exact: dict[str, Any] | None = None
+    prefix: dict[str, Any] | None = None
+    for item in cities:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("city_name") or "").strip()
+        folded = name.casefold()
+        if folded == normalized:
+            exact = item
+            break
+        if folded.startswith(normalized) or normalized.startswith(folded):
+            prefix = prefix or item
+    return exact or prefix or (cities[0] if cities else None)
+
+
+def _city_info_from_api(item: dict[str, Any], *, fallback_name: str) -> _CityInfo | None:
+    city_id = str(item.get("city_id") or "").strip()
+    city_name = str(item.get("city_name") or fallback_name).strip()
+    if not city_id:
+        return None
+    return _CityInfo(
+        city_id=city_id,
+        city_name=city_name,
+        slug=city_to_slug(city_name),
+        federated_state_id=str(item.get("federated_state_id") or "").strip(),
+    )
+
+
+async def _city_coords(
+    client: httpx.AsyncClient,
+    city_name: str,
+) -> tuple[float, float] | None:
+    key = city_name.strip().casefold()
+    if key in _wg_city_coords_cache:
+        return _wg_city_coords_cache[key]
+    coords = await _geocode_city(client, city_name)
+    _wg_city_coords_cache[key] = coords
+    return coords
+
+
+def _listing_city_label(data: dict[str, Any], listing: ListingData | None = None) -> str:
+    district = str(data.get("district_custom") or "").strip()
+    if district:
+        return district
+    if listing is not None and listing.location:
+        return str(listing.location).split(",")[-1].strip()
+    return ""
+
+
+async def _offer_coords(
+    client: httpx.AsyncClient,
+    data: dict[str, Any],
+    *,
+    listing: ListingData | None = None,
+) -> tuple[float, float] | None:
+    city_label = _listing_city_label(data, listing)
+    postcode = str(data.get("postcode") or "").strip()
+    if city_label and postcode:
+        return await _geocode_city(client, f"{postcode} {city_label}")
+    if city_label:
+        return await _geocode_city(client, city_label)
+    return None
+
+
+def _apply_search_geo(
+    listing: ListingData,
+    *,
+    center_coords: tuple[float, float] | None,
+    radius_km: int,
+    allowed_cities: list[_CityInfo],
+) -> None:
+    listing.raw_data["allowed_wg_city_ids"] = [city.city_id for city in allowed_cities]
+    listing.raw_data["allowed_wg_city_names"] = [city.city_name for city in allowed_cities]
+    listing.raw_data["search_radius_km"] = radius_km
+    if center_coords is not None:
+        listing.raw_data["search_center"] = center_coords
+
+    api = listing.raw_data.get("api")
+    offer_city_id = str(api.get("city_id") if isinstance(api, dict) else "") or ""
+    if radius_km > 0 and offer_city_id:
+        allowed_ids = {city.city_id for city in allowed_cities}
+        if offer_city_id not in allowed_ids:
+            listing.raw_data["outside_search_radius"] = True
+
+
+async def _attach_offer_distance_km(
+    client: httpx.AsyncClient,
+    listing: ListingData,
+    data: dict[str, Any],
+    *,
+    center_coords: tuple[float, float] | None,
+    radius_km: int,
+) -> None:
+    if center_coords is None or radius_km <= 0:
+        return
+    coords = await _offer_coords(client, data, listing=listing)
+    if coords is None:
+        return
+    distance = haversine_km(center_coords[0], center_coords[1], coords[0], coords[1])
+    listing.raw_data["distance_km"] = round(distance, 1)
+    if distance > radius_km:
+        listing.raw_data["outside_search_radius"] = True
+
+
 def build_search_url(
     city: _CityInfo | str,
     *,
@@ -405,19 +573,12 @@ async def _resolve_city(client: httpx.AsyncClient, city: str) -> _CityInfo | Non
         if not isinstance(cities, list) or not cities:
             continue
 
-        best = cities[0]
+        best = _pick_wg_city_match(cities, candidate)
         if not isinstance(best, dict):
             continue
-        city_id = str(best.get("city_id") or "").strip()
-        city_name = str(best.get("city_name") or candidate).strip()
-        if not city_id:
-            continue
-        return _CityInfo(
-            city_id=city_id,
-            city_name=city_name,
-            slug=city_to_slug(city_name),
-            federated_state_id=str(best.get("federated_state_id") or "").strip(),
-        )
+        city_info = _city_info_from_api(best, fallback_name=candidate)
+        if city_info is not None:
+            return city_info
     return None
 
 
@@ -471,13 +632,13 @@ async def _geocode_city(
     return coords
 
 
-async def _nearby_place_names(
+async def _nearby_places(
     client: httpx.AsyncClient,
     lat: float,
     lon: float,
     radius_km: int,
-) -> list[str]:
-    """Населённые пункты в радиусе через Overpass API."""
+) -> list[tuple[str, float, float]]:
+    """Населённые пункты в радиусе через Overpass API (имя + координаты OSM)."""
     cache_key = (f"{lat:.4f},{lon:.4f}", radius_km)
     if cache_key in _nearby_names_cache:
         return _nearby_names_cache[cache_key]
@@ -489,7 +650,8 @@ async def _nearby_place_names(
         f"(around:{radius_m},{lat},{lon});"
         f");out body;"
     )
-    names: list[str] = []
+    places: list[tuple[str, float, float]] = []
+    seen: set[str] = set()
     try:
         await polite_delay(min_sec=1.0, max_sec=1.5)
         response = await client.post(
@@ -509,13 +671,26 @@ async def _nearby_place_names(
                 if not isinstance(tags, dict):
                     continue
                 name = str(tags.get("name") or "").strip()
-                if name and name not in names:
-                    names.append(name)
+                if not name:
+                    continue
+                try:
+                    place_lat = float(element["lat"])
+                    place_lon = float(element["lon"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                distance = haversine_km(lat, lon, place_lat, place_lon)
+                if distance > radius_km + 1.0:
+                    continue
+                key = name.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                places.append((name, place_lat, place_lon))
     except httpx.HTTPError as error:
         logger.warning("Overpass nearby %d км: %s", radius_km, error)
 
-    _nearby_names_cache[cache_key] = names
-    return names
+    _nearby_names_cache[cache_key] = places
+    return places
 
 
 async def _resolve_radius_cities(
@@ -523,7 +698,7 @@ async def _resolve_radius_cities(
     primary: _CityInfo,
     radius_km: int,
 ) -> list[_CityInfo]:
-    """Соседние города WG-Gesucht в пределах радиуса Umkreis."""
+    """Соседние города WG-Gesucht строго в пределах радиуса Umkreis."""
     if radius_km <= 0:
         return []
 
@@ -531,20 +706,40 @@ async def _resolve_radius_cities(
     if coords is None:
         return []
 
-    lat, lon = coords
-    names = await _nearby_place_names(client, lat, lon, radius_km)
+    center_lat, center_lon = coords
+    places = await _nearby_places(client, center_lat, center_lon, radius_km)
     resolved: list[_CityInfo] = []
     seen_ids: set[str] = {primary.city_id}
 
-    for name in names[: _MAX_RADIUS_CITIES * 2]:
+    for name, _place_lat, _place_lon in places[: _MAX_RADIUS_CITIES * 3]:
         city = await _resolve_city(client, name)
         if city is None or city.city_id in seen_ids:
+            continue
+        if city.city_name.casefold() != name.casefold() and name.casefold() not in city.city_name.casefold():
+            logger.debug(
+                "WG-Gesucht: Overpass %r → WG %r — имя не совпало, пропуск",
+                name,
+                city.city_name,
+            )
             continue
         if (
             primary.federated_state_id
             and city.federated_state_id
             and city.federated_state_id != primary.federated_state_id
         ):
+            continue
+        city_coords = await _city_coords(client, city.city_name)
+        if city_coords is None:
+            continue
+        distance = haversine_km(center_lat, center_lon, city_coords[0], city_coords[1])
+        if distance > radius_km + 2.0:
+            logger.debug(
+                "WG-Gesucht: %s (~%.1f км) вне радиуса %d км от %s",
+                city.city_name,
+                distance,
+                radius_km,
+                primary.city_name,
+            )
             continue
         seen_ids.add(city.city_id)
         resolved.append(city)
@@ -753,18 +948,15 @@ def _city_match_tokens(city_info: _CityInfo, city_query: str) -> list[str]:
         cleaned = " ".join(str(raw).split())
         if not cleaned:
             continue
+        cleaned = re.sub(r"\([^)]*\)", " ", cleaned).strip()
         tokens.append(_normalize_token(cleaned))
         first = cleaned.split()[0]
         if first:
             tokens.append(_normalize_token(first))
-        if "(" in cleaned:
-            inside = cleaned.split("(", 1)[1].split(")", 1)[0].strip()
-            if inside:
-                tokens.append(_normalize_token(inside))
     seen: set[str] = set()
     unique: list[str] = []
     for token in tokens:
-        if len(token) < 3 or token in seen:
+        if len(token) < 4 or token in seen or token in _STATE_TOKENS:
             continue
         seen.add(token)
         unique.append(token)
@@ -786,7 +978,18 @@ def _sitemap_category_slugs(rooms_min: Any) -> set[str]:
 
 def _url_matches_city(location: str, tokens: list[str]) -> bool:
     folded = _normalize_token(location)
-    return any(token in folded for token in tokens)
+    segments = [segment for segment in location.casefold().split("-") if segment]
+    normalized_segments = {_normalize_token(segment) for segment in segments}
+    for token in tokens:
+        if len(token) < 4:
+            continue
+        if token == folded:
+            return True
+        if token in normalized_segments:
+            return True
+        if folded.startswith(f"{token}-") or folded.endswith(f"-{token}"):
+            return True
+    return False
 
 
 def _collect_sitemap_candidates(
@@ -856,6 +1059,7 @@ def _passes_api_filters(
     budget_max: Any,
     rooms_min: Any,
     radius: int,
+    center_coords: tuple[float, float] | None = None,
 ) -> bool:
     if not _category_allowed(data.get("category"), rooms_min):
         return False
@@ -864,8 +1068,25 @@ def _passes_api_filters(
     if radius <= 0:
         if offer_city_id and offer_city_id != city_info.city_id:
             return False
-    elif allowed_city_ids and offer_city_id and offer_city_id not in allowed_city_ids:
-        return False
+    else:
+        if not offer_city_id or not allowed_city_ids or offer_city_id not in allowed_city_ids:
+            return False
+        if center_coords is not None:
+            district = str(data.get("district_custom") or "").strip()
+            if district:
+                # Синхронная проверка по кэшу геокодинга (без await в filter).
+                coords = _wg_city_coords_cache.get(district.casefold())
+                if coords is None:
+                    coords = _geocode_cache.get(district.casefold())
+                if coords is not None:
+                    distance = haversine_km(
+                        center_coords[0],
+                        center_coords[1],
+                        coords[0],
+                        coords[1],
+                    )
+                    if distance > radius + 2.0:
+                        return False
 
     price, _kind = _api_price(data)
     if budget_max is not None and price is not None:
@@ -1020,6 +1241,7 @@ async def _fetch_via_sitemap(
     budget_max: Any,
     rooms_min: Any,
     radius: int,
+    center_coords: tuple[float, float] | None = None,
 ) -> list[ListingData]:
     """Обход CAPTCHA: ID из sitemap, детали через /api/offers/{id}."""
     if not cities:
@@ -1041,6 +1263,12 @@ async def _fetch_via_sitemap(
                 tokens.append(token)
 
     allowed_city_ids = {city.city_id for city in cities}
+    if center_coords is not None and radius > 0:
+        for city in cities:
+            coords = await _city_coords(client, city.city_name)
+            if coords is not None:
+                _wg_city_coords_cache[city.city_name.casefold()] = coords
+
     categories = _sitemap_category_slugs(rooms_min)
     candidates = _collect_sitemap_candidates(
         xml,
@@ -1075,9 +1303,21 @@ async def _fetch_via_sitemap(
             budget_max=budget_max,
             rooms_min=rooms_min,
             radius=radius,
+            center_coords=center_coords,
         ):
             continue
-        listings.append(_listing_from_api_data(data, fallback_url=url))
+        listing = _listing_from_api_data(data, fallback_url=url)
+        if center_coords is not None and radius > 0:
+            await _attach_offer_distance_km(
+                client,
+                listing,
+                data,
+                center_coords=center_coords,
+                radius_km=radius,
+            )
+            if listing.raw_data.get("outside_search_radius"):
+                continue
+        listings.append(listing)
 
     return listings
 
@@ -1183,6 +1423,26 @@ async def _load_one(
         return
 
     _apply_api_data(listing, data)
+
+    center = listing.raw_data.get("search_center")
+    radius = int(listing.raw_data.get("search_radius_km") or 0)
+    if (
+        isinstance(center, (list, tuple))
+        and len(center) == 2
+        and radius > 0
+    ):
+        center_coords = (float(center[0]), float(center[1]))
+        await _attach_offer_distance_km(
+            client,
+            listing,
+            data,
+            center_coords=center_coords,
+            radius_km=radius,
+        )
+        offer_city_id = str(data.get("city_id") or "")
+        allowed_ids = {str(item) for item in listing.raw_data.get("allowed_wg_city_ids") or []}
+        if offer_city_id and allowed_ids and offer_city_id not in allowed_ids:
+            listing.raw_data["outside_search_radius"] = True
 
 
 def _float_or_none(value: Any) -> float | None:
