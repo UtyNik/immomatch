@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 _ALERT_COOLDOWN_SEC: Final[int] = 3600
 _alert_bot: Bot | None = None
 _last_parser_alert: dict[str, float] = {}
+_parser_alert_history: list[dict[str, str | float]] = []
+_MAX_ALERT_HISTORY: Final[int] = 200
 
 
 def init_alert_bot(bot: Bot) -> None:
@@ -40,6 +42,27 @@ def _cooldown_active(source_platform: str, issue: str) -> bool:
 
 def _mark_sent(source_platform: str, issue: str) -> None:
     _last_parser_alert[_alert_key(source_platform, issue)] = time.monotonic()
+
+
+def _record_parser_alert(source_platform: str, issue: str, detail: str | None) -> None:
+    """Сохраняет алерт для /admin (последние 24 ч)."""
+    global _parser_alert_history
+    _parser_alert_history.append(
+        {
+            "platform": source_platform,
+            "issue": issue,
+            "detail": detail or "",
+            "ts": time.time(),
+        }
+    )
+    if len(_parser_alert_history) > _MAX_ALERT_HISTORY:
+        _parser_alert_history = _parser_alert_history[-_MAX_ALERT_HISTORY :]
+
+
+def parser_alerts_last_24h() -> list[dict[str, str | float]]:
+    """Алерты парсеров за последние 24 часа (UTC monotonic wall time)."""
+    cutoff = time.time() - 86400
+    return [item for item in _parser_alert_history if float(item["ts"]) >= cutoff]
 
 
 async def send_admin_alert(bot: Bot | None, message: str) -> None:
@@ -89,6 +112,7 @@ async def send_parser_alert(
 
     await send_admin_alert(bot, message)
     _mark_sent(source_platform, issue)
+    _record_parser_alert(source_platform, issue, detail)
     logger.info("Алерт админу: %s — %s", source_platform, issue)
 
 

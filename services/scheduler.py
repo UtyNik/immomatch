@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from config import get_settings
 from database import get_auto_search_users, toggle_auto_search
+from services.user_limits import BETA_AI_LETTERS_DAILY
 from texts import DEFAULT_LANG, t
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,13 @@ async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
     result = await find_first_match(profile)
     if result.failure == "limit":
         logger.info("Автопоиск: пользователь %s исчерпал лимит AI", user_id)
+        return
+    if result.failure == "beta_letters":
+        logger.info(
+            "Автопоиск: пользователь %s — лимит Anschreiben бета (%d/день), поиск без AI",
+            user_id,
+            BETA_AI_LETTERS_DAILY,
+        )
         return
     if result.failure == "empty":
         logger.info(

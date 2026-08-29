@@ -40,6 +40,7 @@ from services.lease_filter import temporary_lease_reason
 from services.listing_price import format_price_line
 from services.listing_time import format_published_ago
 from services.search_orchestrator import get_search_orchestrator
+from services.user_limits import BETA_AI_LETTERS_DAILY, can_generate_letter
 from services.translator import normalize_and_translate_user_input
 from texts import DEFAULT_LANG, t
 from validators import (
@@ -325,10 +326,6 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
     settings = get_settings()
     used = await count_ai_calls_today(user_id)
 
-    if not settings.ai_budget_left(used):
-        logger.info("Пользователь %s исчерпал дневной лимит AI", user_id)
-        return FirstMatchResult(failure="limit")
-
     city, radius = await _prepare_search_location(profile)
     deep = not bool(profile.get("deep_search_done"))
     pages = INITIAL_SEARCH_PAGES if deep else FOLLOWUP_SEARCH_PAGES
@@ -412,6 +409,18 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
     if not candidates:
         return FirstMatchResult(filtered=filtered)
 
+    if not await can_generate_letter(user_id):
+        logger.info(
+            "Пользователь %s: лимит Anschreiben бета-теста (%d/день)",
+            user_id,
+            BETA_AI_LETTERS_DAILY,
+        )
+        return FirstMatchResult(filtered=filtered, failure="beta_letters")
+
+    if not settings.ai_budget_left(used):
+        logger.info("Пользователь %s исчерпал дневной лимит AI", user_id)
+        return FirstMatchResult(filtered=filtered, failure="limit")
+
     checked = 0
     for apartment in candidates[:MAX_AI_CHECKS]:
         if not settings.ai_budget_left(used):
@@ -488,6 +497,12 @@ async def run_search(user: User, send: Sender, state: FSMContext) -> None:
 
     if result.failure == "limit":
         await send(t(lang, "ai_limit_reached", limit=get_settings().ai_daily_limit))
+        return
+    if result.failure == "beta_letters":
+        await send(
+            t(lang, "beta_letter_limit", limit=BETA_AI_LETTERS_DAILY),
+            reply_markup=profile_reply_keyboard(lang),
+        )
         return
     if result.failure == "scraper":
         await send(

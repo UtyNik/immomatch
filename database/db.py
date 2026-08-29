@@ -511,6 +511,73 @@ async def count_ai_calls_today(user_id: int) -> int:
     return int(row["calls"]) if row else 0
 
 
+async def count_anschreiben_today(user_id: int) -> int:
+    """Anschreiben, отправленные пользователю сегодня (UTC)."""
+    day = _utc_day()
+    async with _connect() as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS cnt FROM seen_apartments
+            WHERE user_id = ? AND was_match = 1
+              AND strftime('%Y-%m-%d', created_at) = ?
+            """,
+            (user_id, day),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+async def count_users_total() -> int:
+    async with _connect() as db:
+        async with db.execute("SELECT COUNT(*) AS cnt FROM users") as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+async def count_auto_search_active() -> int:
+    async with _connect() as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS cnt FROM users
+            WHERE is_active = 1
+              AND COALESCE(is_auto_search_enabled, 1) = 1
+              AND city IS NOT NULL AND TRIM(city) != ''
+            """
+        ) as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+async def count_listings_total() -> int:
+    async with _connect() as db:
+        async with db.execute("SELECT COUNT(*) AS cnt FROM listings") as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+async def count_anschreiben_total() -> int:
+    async with _connect() as db:
+        async with db.execute(
+            "SELECT COUNT(*) AS cnt FROM seen_apartments WHERE was_match = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+async def count_anschreiben_today_all() -> int:
+    day = _utc_day()
+    async with _connect() as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS cnt FROM seen_apartments
+            WHERE was_match = 1 AND strftime('%Y-%m-%d', created_at) = ?
+            """,
+            (day,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return int(row["cnt"]) if row else 0
+
+
 async def register_ai_call(user_id: int) -> int:
     """Увеличивает счётчик обращений и возвращает новое значение."""
     day = _utc_day()

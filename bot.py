@@ -51,16 +51,17 @@ async def setup_bot_commands(bot: Bot) -> None:
     Telegram выбирает набор по языку клиента, а не по языку анкеты, поэтому
     описания задаются для каждого языка отдельно.
     """
-    menus: Final[dict[str | None, tuple[str, str]]] = {
-        None: ("Profile", "Find a home"),
-        "uk": ("Анкета", "Знайти житло"),
-        "ru": ("Анкета", "Найти жильё"),
+    menus: Final[dict[str | None, tuple[str, str, str]]] = {
+        None: ("Profile", "Find a home", "Send feedback"),
+        "uk": ("Анкета", "Знайти житло", "Відгук"),
+        "ru": ("Анкета", "Найти жильё", "Отзыв"),
     }
-    for language_code, (start_title, search_title) in menus.items():
+    for language_code, (start_title, search_title, feedback_title) in menus.items():
         await bot.set_my_commands(
             [
                 BotCommand(command="start", description=start_title),
                 BotCommand(command="search", description=search_title),
+                BotCommand(command="feedback", description=feedback_title),
             ],
             language_code=language_code,
         )

@@ -19,8 +19,17 @@ LANGUAGES: Final[dict[str, str]] = {
 # Приветствие и выбор языка показываются до того, как язык известен,
 # поэтому они многоязычные.
 WELCOME_TEXT: Final[str] = (
-    "🏠 <b>Вітаємо в ImmoMatch AI! / Добро пожаловать в ImmoMatch AI!</b>"
-    "\n\nЯ допоможу тобі знайти житло в Німеччині."
+    "🏠 <b>Вітаємо в ImmoMatch AI! / Добро пожаловать в ImmoMatch AI!</b>\n\n"
+    "Бот у <b>закритому бета-тесті</b>. Шукає житло на "
+    "<b>Kleinanzeigen</b>, <b>Immowelt</b> та <b>WG-Gesucht</b>, "
+    "генерує німецькі Anschreiben.\n\n"
+    "Бот в <b>закрытом бета-тесте</b>. Ищет жильё на "
+    "<b>Kleinanzeigen</b>, <b>Immowelt</b> и <b>WG-Gesucht</b>, "
+    "генерирует немецкие Anschreiben.\n\n"
+    "This bot is in <b>closed beta</b>. It searches "
+    "<b>Kleinanzeigen</b>, <b>Immowelt</b> and <b>WG-Gesucht</b> "
+    "and drafts German cover letters.\n\n"
+    "💬 Зворотний зв'язок / Обратная связь / Feedback: <code>/feedback ваш текст</code>"
 )
 
 CHOOSE_LANGUAGE: Final[str] = (
@@ -162,6 +171,23 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ai_limit_reached": (
             "🚫 На сьогодні вичерпано ліміт AI-оцінок (<b>{limit}</b>). "
             "Спробуйте завтра."
+        ),
+        "beta_intro": (
+            "🧪 <b>Закритий бета-тест.</b> Шукаю житло на Kleinanzeigen, Immowelt "
+            "і WG-Gesucht і готую Anschreiben німецькою.\n"
+            "💬 Зворотний зв'язок: <code>/feedback ваш текст</code>"
+        ),
+        "beta_letter_limit": (
+            "ℹ️ Досягнуто денний ліміт AI-листів для бета-тесту "
+            "(<b>{limit}/{limit}</b>). Пошук продовжується, але листи поки не генеруються."
+        ),
+        "feedback_usage": (
+            "💬 Надішліть відгук так:\n<code>/feedback ваш текст</code>"
+        ),
+        "feedback_thanks": "✅ Дякуємо! Ваше повідомлення передано розробнику.",
+        "btn_feedback": "💬 Відгук",
+        "auto_search_preset_limit": (
+            "ℹ️ У бета-тесті доступний один пресет автопошуку на акаунт."
         ),
         "err_city": "⚠️ Введіть назву міста текстом (від {min} до {max} символів).",
         "err_number": (
@@ -352,6 +378,23 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "🚫 На сегодня лимит AI-оценок исчерпан (<b>{limit}</b>). "
             "Попробуйте завтра."
         ),
+        "beta_intro": (
+            "🧪 <b>Закрытый бета-тест.</b> Ищу жильё на Kleinanzeigen, Immowelt "
+            "и WG-Gesucht и готовлю Anschreiben на немецком.\n"
+            "💬 Обратная связь: <code>/feedback ваш текст</code>"
+        ),
+        "beta_letter_limit": (
+            "ℹ️ Достигнут дневной лимит AI-писем для бета-теста "
+            "(<b>{limit}/{limit}</b>). Поиск продолжается, но письма пока не генерируются."
+        ),
+        "feedback_usage": (
+            "💬 Отправьте отзыв так:\n<code>/feedback ваш текст</code>"
+        ),
+        "feedback_thanks": "✅ Спасибо! Ваше сообщение передано разработчику.",
+        "btn_feedback": "💬 Отзыв",
+        "auto_search_preset_limit": (
+            "ℹ️ В бета-тесте доступен один пресет автопоиска на аккаунт."
+        ),
         "err_city": "⚠️ Введите название города текстом (от {min} до {max} символов).",
         "err_number": (
             "⚠️ Это не похоже на число. Введите только цифры, "
@@ -537,6 +580,23 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ai_limit_reached": (
             "🚫 Daily limit of AI reviews reached (<b>{limit}</b>). "
             "Please try again tomorrow."
+        ),
+        "beta_intro": (
+            "🧪 <b>Closed beta.</b> I search Kleinanzeigen, Immowelt and WG-Gesucht "
+            "and draft German Anschreiben.\n"
+            "💬 Feedback: <code>/feedback your message</code>"
+        ),
+        "beta_letter_limit": (
+            "ℹ️ Daily beta limit for AI letters reached "
+            "(<b>{limit}/{limit}</b>). Search continues, but letters are paused for now."
+        ),
+        "feedback_usage": (
+            "💬 Send feedback like this:\n<code>/feedback your message</code>"
+        ),
+        "feedback_thanks": "✅ Thank you! Your message was forwarded to the developer.",
+        "btn_feedback": "💬 Feedback",
+        "auto_search_preset_limit": (
+            "ℹ️ Closed beta allows one auto-search preset per account."
         ),
         "err_city": "⚠️ Please send the city name as text ({min}–{max} characters).",
         "err_number": (

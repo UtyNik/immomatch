@@ -20,8 +20,11 @@ from database import (
     update_user_language,
 )
 from handlers.common import Sender, drop_keyboard, sender
+from handlers.feedback import CB_FEEDBACK_HINT
+from handlers.start import beta_intro_text
 from keyboards import CB_AUTO_SEARCH, CB_SEARCH, PROFILE_BUTTON_TEXTS, profile_reply_keyboard
 from services.translator import normalize_and_translate_user_input
+from services.user_limits import can_enable_auto_search
 from states import OnboardingStates
 from texts import CHOOSE_LANGUAGE, DEFAULT_LANG, LANGUAGES, WELCOME_TEXT, t
 from validators import (
@@ -213,6 +216,7 @@ def profile_keyboard(
     builder.button(text=t(lang, auto_key), callback_data=CB_AUTO_SEARCH)
     builder.button(text=t(lang, "btn_change_lang"), callback_data=CB_LANG_MENU)
     builder.button(text=t(lang, "btn_edit_profile"), callback_data=CB_EDIT_MENU)
+    builder.button(text=t(lang, "btn_feedback"), callback_data=CB_FEEDBACK_HINT)
     builder.button(text=t(lang, "btn_new_profile"), callback_data=CB_NEW_PROFILE)
     builder.adjust(1)
     return builder.as_markup()
@@ -844,6 +848,7 @@ async def show_saved_or_start_survey(
     if profile and profile.get("city"):
         lang = str(profile.get("language") or DEFAULT_LANG)
         await state.clear()
+        await send(beta_intro_text(lang))
         await send(t(lang, "your_profile"), reply_markup=profile_reply_keyboard(lang))
         if await prompt_missing_profile_fields(send, state, lang, profile):
             return
@@ -884,6 +889,7 @@ async def new_profile(callback: CallbackQuery, state: FSMContext, bot: Bot) -> N
     lang = str(profile.get("language") or DEFAULT_LANG) if profile else None
 
     await drop_keyboard(callback)
+    await toggle_auto_search(callback.from_user.id, False)
     await _start_survey(sender(callback, bot), state, lang)
     await callback.answer()
 
@@ -985,6 +991,9 @@ async def toggle_auto_search_button(callback: CallbackQuery, bot: Bot) -> None:
 
     lang = str(profile.get("language") or DEFAULT_LANG)
     enabled = not bool(profile.get("is_auto_search_enabled", True))
+    if enabled and not await can_enable_auto_search(callback.from_user.id):
+        await callback.answer(t(lang, "auto_search_preset_limit"), show_alert=True)
+        return
     await toggle_auto_search(callback.from_user.id, enabled)
     profile["is_auto_search_enabled"] = enabled
 
