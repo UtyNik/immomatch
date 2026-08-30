@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup, Tag
 
 from scrapers.kleinanzeigen import resolve_warm_rent
 from services.alerts import alert_blocked_html, alert_http_status, alert_parse_failure
-from services.http_politeness import detect_block_reason, polite_delay
+from services.http_politeness import detect_block_reason, polite_delay_for
 from services.listing_time import (
     parse_german_listing_date,
     parse_iso_from_html,
@@ -94,7 +94,7 @@ _EXPOSE_ID = re.compile(
 
 async def _fetch_html(client: httpx.AsyncClient, url: str) -> str:
     """GET с паузой и проверкой CAPTCHA / rate limit."""
-    await polite_delay()
+    await polite_delay_for("immowelt")
     response = await client.get(url)
     if response.status_code in (403, 429):
         await alert_http_status("immowelt", response.status_code, url=url)
@@ -173,7 +173,7 @@ class ImmoweltProvider(BaseProvider):
                 if added == 0:
                     break
                 if page < max_pages:
-                    await asyncio.sleep(1.0)
+                    await polite_delay_for("immowelt")
 
         logger.info("Immowelt: получено %d объявлений для %s", len(listings), city)
         return listings

@@ -16,7 +16,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from services.alerts import alert_blocked_html, alert_http_status
-from services.http_politeness import detect_block_reason, polite_delay
+from services.http_politeness import detect_block_reason, polite_delay_for, polite_delay_geo
 from services.listing_time import parse_german_listing_date
 from services.parsers.base import BaseProvider, ListingData
 from validators import infer_price_kind, parse_amount, parse_first_amount, parse_number, parse_sqm
@@ -292,7 +292,7 @@ async def _fetch_html_listings(
                     budget_max=budget_max,
                 )
                 try:
-                    await polite_delay()
+                    await polite_delay_for("wggesucht")
                     response = await client.get(url)
                     response.raise_for_status()
                 except httpx.HTTPStatusError as error:
@@ -356,7 +356,7 @@ async def _fetch_html_listings(
                 if added == 0:
                     break
                 if page < max_pages:
-                    await asyncio.sleep(0.8)
+                    await polite_delay_for("wggesucht")
 
             if html_blocked:
                 break
@@ -558,7 +558,7 @@ async def _resolve_city(client: httpx.AsyncClient, city: str) -> _CityInfo | Non
 
     for candidate in _city_query_variants(query):
         try:
-            await polite_delay(min_sec=0.8, max_sec=1.5)
+            await polite_delay_for("wggesucht")
             response = await client.get(
                 f"{BASE_URL}/api/location/cities/names/{candidate}",
                 headers=_API_HEADERS,
@@ -594,7 +594,7 @@ async def _geocode_city(
         return _geocode_cache[key]
 
     try:
-        await polite_delay(min_sec=1.0, max_sec=1.5)
+        await polite_delay_geo()
         response = await client.get(
             _NOMINATIM_URL,
             params={
@@ -653,7 +653,7 @@ async def _nearby_places(
     places: list[tuple[str, float, float]] = []
     seen: set[str] = set()
     try:
-        await polite_delay(min_sec=1.0, max_sec=1.5)
+        await polite_delay_geo()
         response = await client.post(
             _OVERPASS_URL,
             data={"data": query},
@@ -925,7 +925,7 @@ async def _get_sitemap_xml(client: httpx.AsyncClient) -> str:
             if now - cached_at < SITEMAP_CACHE_TTL:
                 return content
 
-        await polite_delay()
+        await polite_delay_for("wggesucht")
         response = await client.get(SITEMAP_URL, headers=_API_HEADERS, timeout=SITEMAP_TIMEOUT)
         if response.status_code in (403, 429):
             await alert_http_status("wggesucht", response.status_code, url=SITEMAP_URL)
@@ -1214,7 +1214,7 @@ async def _fetch_offer_api(
 ) -> dict[str, Any] | None:
     async with semaphore:
         try:
-            await polite_delay(min_sec=0.8, max_sec=1.5)
+            await polite_delay_for("wggesucht")
             response = await client.get(
                 f"{BASE_URL}/api/offers/{offer_id}",
                 headers=_API_HEADERS,
@@ -1403,7 +1403,7 @@ async def _load_one(
 ) -> None:
     async with semaphore:
         try:
-            await polite_delay(min_sec=0.8, max_sec=1.5)
+            await polite_delay_for("wggesucht")
             response = await client.get(f"{BASE_URL}/api/offers/{listing.id}")
             if response.status_code in (403, 429):
                 await alert_http_status(

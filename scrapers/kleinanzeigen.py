@@ -16,7 +16,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 
 from services.alerts import alert_blocked_html, alert_http_status, alert_parse_failure
-from services.http_politeness import detect_block_reason, polite_delay
+from services.http_politeness import detect_block_reason, polite_delay_for
 from services.listing_time import (
     parse_german_listing_date,
     parse_iso_from_html,
@@ -155,7 +155,7 @@ async def _warmup(client: httpx.AsyncClient, *, force: bool = False) -> None:
     if _session_warmed and not force:
         return
     try:
-        await polite_delay()
+        await polite_delay_for("kleinanzeigen")
         response = await client.get(BASE_URL)
         _session_warmed = response.status_code < 400
         logger.info(
@@ -640,7 +640,7 @@ async def _load_details(
     """Скачивает страницу объявления и дополняет словарь."""
     async with semaphore:
         try:
-            await polite_delay()
+            await polite_delay_for("kleinanzeigen")
             response = await client.get(listing["link"])
             response.raise_for_status()
         except httpx.HTTPError as error:
@@ -667,7 +667,7 @@ async def _get_search_html(client: httpx.AsyncClient, url: str) -> str:
     last_status: int | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            await polite_delay()
+            await polite_delay_for("kleinanzeigen")
             response = await client.get(url)
         except httpx.HTTPError as error:
             raise ScraperError(f"Сеть недоступна: {error}") from error
@@ -718,7 +718,7 @@ async def _lookup_location_id(city: str) -> str | None:
         async with httpx.AsyncClient(
             headers=_JSON_HEADERS, timeout=REQUEST_TIMEOUT, follow_redirects=True
         ) as client:
-            await polite_delay()
+            await polite_delay_for("kleinanzeigen")
             response = await client.get(
                 LOCATION_SUGGEST_URL, params={"query": city.strip()}
             )
@@ -734,7 +734,7 @@ async def _lookup_location_id(city: str) -> str | None:
                 async with httpx.AsyncClient(
                     headers=_JSON_HEADERS, timeout=REQUEST_TIMEOUT, follow_redirects=True
                 ) as client:
-                    await polite_delay()
+                    await polite_delay_for("kleinanzeigen")
                     response = await client.get(
                         LOCATION_SUGGEST_URL, params={"query": short}
                     )
