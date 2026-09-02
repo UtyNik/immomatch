@@ -100,7 +100,7 @@ EDITABLE_FIELDS: Final[tuple[str, ...]] = (
     "notes",
 )
 # Смена этих полей меняет выдачу Kleinanzeigen / отсев — нужен новый
-# глубокий обход (до 3 страниц) и сброс seen.
+# глубокий обход (до 2 страниц) и сброс seen.
 _SEARCH_RESET_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "city",

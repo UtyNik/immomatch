@@ -87,8 +87,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_gender_male": "👨 Чоловіча",
         "btn_gender_female": "👩 Жіноча",
         "ask_household_type": "👥 Хто житиме разом з вами?",
-        "btn_htype_partner_female": "👩‍❤️‍👨 З дівчиною / дружиною",
-        "btn_htype_partner_male": "👨‍❤️‍👨 З хлопцем / чоловіком",
+        "btn_htype_partner_female": "👩 З дівчиною / дружиною",
+        "btn_htype_partner_male": "👨 З хлопцем / чоловіком",
         "btn_htype_family": "👨‍👩‍👧 Сім'я з дітьми",
         "btn_htype_wg": "👥 Спільна оренда (WG / друзі)",
         "ask_last_name": (
@@ -293,8 +293,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_gender_male": "👨 Мужской",
         "btn_gender_female": "👩 Женский",
         "ask_household_type": "👥 Кто будет жить вместе с вами?",
-        "btn_htype_partner_female": "👩‍❤️‍👨 С девушкой / женой",
-        "btn_htype_partner_male": "👨‍❤️‍👨 С парнем / мужем",
+        "btn_htype_partner_female": "👩 С девушкой / женой",
+        "btn_htype_partner_male": "👨 С парнем / мужем",
         "btn_htype_family": "👨‍👩‍👧 Семья с детьми",
         "btn_htype_wg": "👥 Совместная аренда (WG / друзья)",
         "ask_last_name": (
@@ -500,8 +500,8 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_gender_male": "👨 Male",
         "btn_gender_female": "👩 Female",
         "ask_household_type": "👥 Who will live with you?",
-        "btn_htype_partner_female": "👩‍❤️‍👨 With a girlfriend / wife",
-        "btn_htype_partner_male": "👨‍❤️‍👨 With a boyfriend / husband",
+        "btn_htype_partner_female": "👩 With a girlfriend / wife",
+        "btn_htype_partner_male": "👨 With a boyfriend / husband",
         "btn_htype_family": "👨‍👩‍👧 Family with children",
         "btn_htype_wg": "👥 Shared rent (friends / WG)",
         "ask_last_name": (

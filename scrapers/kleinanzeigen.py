@@ -78,7 +78,7 @@ REQUEST_TIMEOUT: Final[float] = 20.0
 DEFAULT_LIMIT: Final[int] = 10
 # Первый поиск по новой анкете листает выдачу; дальше — только первая страница.
 FOLLOWUP_SEARCH_PAGES: Final[int] = 1
-INITIAL_SEARCH_PAGES: Final[int] = 3
+INITIAL_SEARCH_PAGES: Final[int] = 2
 _PAGE_PAUSE_SEC: Final[float] = 1.0
 # Одновременных запросов к сайту. Больше — риск получить 403/429.
 MAX_CONCURRENCY: Final[int] = 2
@@ -489,13 +489,16 @@ def _card_address(card: Tag) -> str | None:
 
 def _card_published_at(card: Tag) -> datetime | None:
     """Дата публикации с карточки: time[datetime], JSON-LD или «Heute» / «vor 2 Std.»."""
-    time_node = card.select_one("time[datetime]")
-    if time_node is not None:
+    for time_node in card.select("time"):
         raw = time_node.get("datetime")
         if isinstance(raw, str):
             parsed = parse_iso_timestamp(raw)
             if parsed is not None:
                 return parsed
+        text = _text_or_none(time_node)
+        parsed = parse_german_listing_date(text)
+        if parsed is not None:
+            return parsed
 
     script = card.select_one("script[type='application/ld+json']")
     raw_json = script.string if script is not None else None
@@ -516,6 +519,9 @@ def _card_published_at(card: Tag) -> datetime | None:
         ".aditem-main--top--right",
         "p.text-onSurfaceSubdued",
         "span.text-onSurfaceSubdued",
+        "[data-testid*='date']",
+        "[data-testid*='time']",
+        ".aditem-main--top--right--date",
     ):
         text = _text_or_none(card.select_one(selector))
         parsed = parse_german_listing_date(text)
@@ -630,6 +636,25 @@ def _parse_details(html: str, listing: dict[str, Any]) -> None:
         stamp = parse_iso_from_html(html)
         if stamp is not None:
             listing["published_at"] = stamp.isoformat()
+        else:
+            for selector in (
+                "#viewad-extra-info",
+                ".viewad-extra-info",
+                "span.boxedarticle--details--date",
+                "[data-testid='ad-detail-date']",
+                "time[datetime]",
+            ):
+                node = soup.select_one(selector)
+                if node is None:
+                    continue
+                raw = node.get("datetime")
+                if isinstance(raw, str):
+                    parsed = parse_iso_timestamp(raw)
+                else:
+                    parsed = parse_german_listing_date(_text_or_none(node))
+                if parsed is not None:
+                    listing["published_at"] = parsed.isoformat()
+                    break
 
 
 async def _load_details(

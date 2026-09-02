@@ -18,7 +18,7 @@ from openai import APIError, AsyncOpenAI
 
 from config import get_settings
 from texts import DEFAULT_LANG
-from validators import area_is_too_small, city_mismatch_reason, kalt_only_budget_reason, parse_search_radius
+from validators import area_below_minimum, area_is_too_small, city_mismatch_reason, kalt_only_budget_reason, parse_search_radius
 from services.salutation import apply_letter_salutation, salutation_from_listing
 
 logger = logging.getLogger(__name__)
@@ -270,9 +270,22 @@ _SHORT_STAY = re.compile(
     re.IGNORECASE,
 )
 _NOT_OFFERING = re.compile(
+    r"wohnungsgesuch|"
+    r"(?:^|[\s:—\-])(?:ich\s+)?suche(?:\s+(?:mir|eine|ein))?\s+(?:eine?\s+)?(?:miet)?wohnung|"
+    r"(?:^|[\s:—\-])suche(?:\s+(?:mir|eine|ein))?\s+(?:eine?\s+)?(?:miet)?wohnung|"
+    r"auf der suche nach (?:einer?\s+)?(?:miet)?wohnung|"
+    r"(?:^|[\s:—\-])gesuch[\s:—\-]|"
     r"(?:suche|gesucht)\s+(?:eine?\s+)?(?:miet)?wohnung|"
     r"wohnung\s+gesucht|"
+    r"zimmer\s+gesucht|"
+    r"sucht (?:eine|einen|mir)\s+(?:miet)?wohnung|"
     r"nur\s+gewerbe",
+    re.IGNORECASE,
+)
+_WANTED_TITLE = re.compile(
+    r"wohnungsgesuch|wohnung\s+gesucht|zimmer\s+gesucht|"
+    r"^(?:ich\s+)?suche\b|"
+    r"\bgesuch\b",
     re.IGNORECASE,
 )
 
@@ -524,7 +537,11 @@ def _phrase_in_listing(phrase: str, apartment: dict[str, Any]) -> bool:
 
 def listing_type_reason(apartment: dict[str, Any]) -> str | None:
     """Почему это не обычная долгосрочная аренда квартиры, или None."""
-    text = f"{apartment.get('title') or ''} {apartment.get('description') or ''}"
+    title = str(apartment.get("title") or "")
+    description = str(apartment.get("description") or "")
+    text = f"{title} {description}"
+    if _WANTED_TITLE.search(title):
+        return "ищут квартиру, а не сдают"
     if _SWAP_LISTING.search(text):
         return "обмен (Tauschwohnung), не аренда"
     if _HOLIDAY_LISTING.search(text):
@@ -551,10 +568,17 @@ def shared_wg_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> str 
 _FEMALE_ONLY = re.compile(
     r"(?:nur|ausschlie(?:ss|ß)lich)\s+(?:für\s+|an\s+)?(?:frauen|damen|studentinnen|weiblich|eine\s+frau)"
     r"|frauen[\s\-]?wg|damen[\s\-]?wg|(?:keine|nicht\s+für)\s+männer"
-    r"|nachmieterin"
+    r"|\bnachmieterin\b|\bmitbewohnerin\s+gesucht\b"
     r"|(?:weibliche[rn]?|nur\s+eine)\s+(?:nach|unter)?mieterin"
-    r"|mieterin\s+gesucht"
+    r"|\bmieterin\s+gesucht\b"
     r"|bevorzugt(?:e)?\s+(?:frauen|damen|weiblich)",
+    re.IGNORECASE,
+)
+_TITLE_FEMALE_ONLY = re.compile(
+    r"\bnachmieterin\b|\bmieterin\s+gesucht\b|"
+    r"\bweibliche[rn]?\s+(?:nach|unter)?mieterin\b|"
+    r"frauen[\s\-]?wg|damen[\s\-]?wg|"
+    r"nur\s+für\s+(?:frauen|damen|weiblich|eine\s+frau)",
     re.IGNORECASE,
 )
 _MALE_ONLY = re.compile(
@@ -576,7 +600,11 @@ def gender_restriction_reason(
     gender = str(profile.get("applicant_gender") or "").strip().lower()
     if gender not in {"male", "female"}:
         return None
-    text = f"{apartment.get('title') or ''} {apartment.get('description') or ''}"
+    title = str(apartment.get("title") or "")
+    description = str(apartment.get("description") or "")
+    text = f"{title} {description}"
+    if gender == "male" and _TITLE_FEMALE_ONLY.search(title):
+        return "объявление только для женщин"
     if _GENDER_MIXED.search(text):
         if gender == "male" and re.search(r"frauen[\s\-]?wg", text, re.IGNORECASE):
             return "объявление только для женщин"
@@ -814,6 +842,13 @@ async def analyze_apartment_and_generate_letter(
     if match and gender_reason:
         logger.info("Объявление %s отклонено кодом: %s", listing_id, gender_reason)
         return {"match": False, "reason": gender_reason, "anschreiben": ""}
+
+    sqm_min = user_profile.get("sqm_min")
+    area = apartment.get("sqm")
+    if match and area_below_minimum(sqm_min, area):
+        area_reason = f"площадь {area} м² < минимум {sqm_min} м²"
+        logger.info("Объявление %s отклонено кодом: %s", listing_id, area_reason)
+        return {"match": False, "reason": area_reason, "anschreiben": ""}
 
     city_reason = city_mismatch_reason(user_profile, apartment)
     if match and city_reason:

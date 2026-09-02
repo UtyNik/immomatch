@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import gzip
 import logging
 import math
@@ -32,6 +33,7 @@ DETAIL_TIMEOUT: Final[float] = 12.0
 SITEMAP_TIMEOUT: Final[float] = 45.0
 MAX_CONCURRENCY: Final[int] = 3
 SITEMAP_CACHE_TTL: Final[float] = 3600.0
+FETCH_CACHE_TTL: Final[float] = 3600.0
 MAX_SITEMAP_SCAN: Final[int] = 400
 MAX_SITEMAP_API_CALLS: Final[int] = 60
 _RADIUS_EXPAND_THRESHOLD: Final[int] = 8
@@ -85,6 +87,8 @@ _SITEMAP_LINE = re.compile(
 
 _sitemap_cache: tuple[float, str] | None = None
 _sitemap_lock = asyncio.Lock()
+_fetch_cache: dict[str, tuple[float, list[ListingData]]] = {}
+_fetch_cache_lock = asyncio.Lock()
 _geocode_cache: dict[str, tuple[float, float] | None] = {}
 _nearby_names_cache: dict[tuple[str, int], list[tuple[str, float, float]]] = {}
 _wg_city_coords_cache: dict[str, tuple[float, float] | None] = {}
@@ -126,10 +130,53 @@ class _CityInfo:
     federated_state_id: str = ""
 
 
+def _fetch_cache_key(search_criteria: dict[str, Any]) -> str:
+    city = str(search_criteria.get("city_de") or search_criteria.get("city") or "")
+    city_key = " ".join(city.split()).casefold()
+    radius = int(search_criteria.get("radius") or 0)
+    budget = search_criteria.get("budget_max")
+    rooms = search_criteria.get("rooms_min")
+    pages = int(search_criteria.get("max_pages") or 1)
+    return f"{city_key}|r{radius}|b{budget}|rm{rooms}|p{pages}"
+
+
 class WGGesuchtProvider(BaseProvider):
     name = "wggesucht"
 
     async def fetch_listings(self, search_criteria: dict[str, Any]) -> list[ListingData]:
+        cache_key = _fetch_cache_key(search_criteria)
+        now = time.monotonic()
+        cached = _fetch_cache.get(cache_key)
+        if cached is not None:
+            cached_at, listings = cached
+            if now - cached_at < FETCH_CACHE_TTL:
+                logger.info(
+                    "WG-Gesucht: отдаю %d объявлений из кэша (TTL %.0f с)",
+                    len(listings),
+                    FETCH_CACHE_TTL,
+                )
+                return copy.deepcopy(listings)
+
+        async with _fetch_cache_lock:
+            now = time.monotonic()
+            cached = _fetch_cache.get(cache_key)
+            if cached is not None:
+                cached_at, listings = cached
+                if now - cached_at < FETCH_CACHE_TTL:
+                    logger.info(
+                        "WG-Gesucht: отдаю %d объявлений из кэша (TTL %.0f с)",
+                        len(listings),
+                        FETCH_CACHE_TTL,
+                    )
+                    return copy.deepcopy(listings)
+
+            listings = await self._fetch_listings_uncached(search_criteria)
+            _fetch_cache[cache_key] = (time.monotonic(), copy.deepcopy(listings))
+            return listings
+
+    async def _fetch_listings_uncached(
+        self, search_criteria: dict[str, Any]
+    ) -> list[ListingData]:
         city = str(search_criteria.get("city_de") or search_criteria.get("city") or "")
         max_pages = max(1, int(search_criteria.get("max_pages") or 1))
         budget_max = search_criteria.get("budget_max")

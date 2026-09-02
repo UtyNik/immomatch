@@ -10,7 +10,14 @@ from zoneinfo import ZoneInfo
 _BERLIN: Final = ZoneInfo("Europe/Berlin")
 
 _ISO_FIELD = re.compile(
-    r'"(?:creationDate|startDateTime|posterDate|activationDate)"\s*:\s*"([^"]+)"',
+    r'"(?:creationDate|startDateTime|posterDate|activationDate|'
+    r'adCreationDate|onlineSince|dateCreated|adPublishedDate|postingDate)"'
+    r'\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+_META_PUBLISHED = re.compile(
+    r'<meta[^>]+(?:property|name)=["\'](?:og:updated_time|article:published_time|'
+    r'article:modified_time)["\'][^>]+content=["\']([^"\']+)["\']',
     re.IGNORECASE,
 )
 _ABSOLUTE_DE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b")
@@ -38,9 +45,14 @@ def parse_iso_timestamp(value: str | None) -> datetime | None:
 def parse_iso_from_html(html: str) -> datetime | None:
     """Ищет creationDate / startDateTime в теле HTML-страницы."""
     match = _ISO_FIELD.search(html)
-    if not match:
-        return None
-    return parse_iso_timestamp(match.group(1))
+    if match:
+        parsed = parse_iso_timestamp(match.group(1))
+        if parsed is not None:
+            return parsed
+    meta = _META_PUBLISHED.search(html)
+    if meta:
+        return parse_iso_timestamp(meta.group(1))
+    return None
 
 
 def parse_german_listing_date(

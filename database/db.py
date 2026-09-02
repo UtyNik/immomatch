@@ -224,7 +224,7 @@ async def init_db() -> None:
         await _add_missing_columns(db)
         await _add_missing_seen_columns(db)
         await _migrate_seen_storage_ids(db)
-        # Кто уже искал жильё, тот не получает повторный обход на 3 страницы.
+        # Кто уже искал жильё, тот не получает повторный обход на 2 страницы.
         await db.execute(
             """
             UPDATE users

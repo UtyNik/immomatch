@@ -148,6 +148,18 @@ def parse_household_type(value: object) -> str | None:
     return text if text in HOUSEHOLD_TYPES else None
 
 
+def area_below_minimum(minimum: object, area: object) -> bool:
+    """Площадь строго меньше заданного минимума (без допуска −20%)."""
+    try:
+        min_val = float(minimum)  # type: ignore[arg-type]
+        actual = float(area)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if min_val <= 0:
+        return False
+    return actual < min_val
+
+
 def area_is_too_small(minimum: object, area: object) -> bool:
     """Площадь заметно меньше запрошенного минимума (больше чем на 20%)."""
     try:

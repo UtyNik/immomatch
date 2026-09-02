@@ -45,7 +45,7 @@ from services.translator import normalize_and_translate_user_input
 from texts import DEFAULT_LANG, t
 from validators import (
     MIN_PLAUSIBLE_RENT,
-    area_is_too_small,
+    area_below_minimum,
     city_mismatch_reason,
     kalt_only_budget_reason,
     parse_search_radius,
@@ -56,8 +56,8 @@ logger = logging.getLogger(__name__)
 router = Router(name="search")
 
 # На одной странице поиска Kleinanzeigen около 25 карточек. Для первого
-# обхода анкеты грузим детали со всех собранных страниц, иначе 2–3-я
-# так и не дойдут до Warmmiete.
+# обход анкеты грузим детали со всех собранных страниц, иначе 2-я
+# так и не дойдёт до Warmmiete.
 DETAILS_PER_PAGE: Final[int] = 25
 # Сколько объявлений максимум отправляем в модель за один поиск. Перебор идёт
 # до первого совпадения, но каждая проверка платная, поэтому он ограничен.
@@ -121,7 +121,7 @@ def hard_filter_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> st
         return f"комнат {rooms} < минимум {rooms_min}"
 
     area = apartment.get("sqm")
-    if area_is_too_small(profile.get("sqm_min"), area):
+    if area_below_minimum(profile.get("sqm_min"), area):
         return f"площадь {area} м² < минимум {profile.get('sqm_min')} м²"
     sqm_max = profile.get("sqm_max")
     if sqm_max is not None and sqm_max > 0 and area is not None and area > sqm_max:
