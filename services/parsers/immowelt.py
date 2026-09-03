@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
-from typing import Any
+import time
+from typing import Any, Final
 from urllib.parse import urlencode
 
 from datetime import datetime
@@ -30,6 +32,10 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.immowelt.de"
 REQUEST_TIMEOUT = 20.0
 MAX_CONCURRENCY = 2
+FETCH_CACHE_TTL: Final[float] = 1800.0  # 30 минут
+
+_fetch_cache: dict[str, tuple[float, list[ListingData]]] = {}
+_fetch_cache_lock = asyncio.Lock()
 
 _HEADERS: dict[str, str] = {
     "User-Agent": (
@@ -106,10 +112,53 @@ async def _fetch_html(client: httpx.AsyncClient, url: str) -> str:
     return response.text
 
 
+def _fetch_cache_key(search_criteria: dict[str, Any]) -> str:
+    city = str(search_criteria.get("city_de") or search_criteria.get("city") or "")
+    city_key = " ".join(city.split()).casefold()
+    budget = search_criteria.get("budget_max")
+    rooms = search_criteria.get("rooms_min")
+    sqm = search_criteria.get("sqm_min")
+    pages = int(search_criteria.get("max_pages") or 1)
+    return f"{city_key}|b{budget}|rm{rooms}|sq{sqm}|p{pages}"
+
+
 class ImmoweltProvider(BaseProvider):
     name = "immowelt"
 
     async def fetch_listings(self, search_criteria: dict[str, Any]) -> list[ListingData]:
+        cache_key = _fetch_cache_key(search_criteria)
+        now = time.monotonic()
+        cached = _fetch_cache.get(cache_key)
+        if cached is not None:
+            cached_at, listings = cached
+            if now - cached_at < FETCH_CACHE_TTL:
+                logger.info(
+                    "Immowelt: отдаю %d объявлений из кэша (TTL %.0f с)",
+                    len(listings),
+                    FETCH_CACHE_TTL,
+                )
+                return copy.deepcopy(listings)
+
+        async with _fetch_cache_lock:
+            now = time.monotonic()
+            cached = _fetch_cache.get(cache_key)
+            if cached is not None:
+                cached_at, listings = cached
+                if now - cached_at < FETCH_CACHE_TTL:
+                    logger.info(
+                        "Immowelt: отдаю %d объявлений из кэша (TTL %.0f с)",
+                        len(listings),
+                        FETCH_CACHE_TTL,
+                    )
+                    return copy.deepcopy(listings)
+
+            listings = await self._fetch_listings_uncached(search_criteria)
+            _fetch_cache[cache_key] = (time.monotonic(), copy.deepcopy(listings))
+            return listings
+
+    async def _fetch_listings_uncached(
+        self, search_criteria: dict[str, Any]
+    ) -> list[ListingData]:
         city = str(search_criteria.get("city_de") or search_criteria.get("city") or "")
         max_pages = max(1, int(search_criteria.get("max_pages") or 1))
         url = build_search_url(
