@@ -338,6 +338,9 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
         "rooms_min": profile.get("rooms_min"),
         "sqm_min": profile.get("sqm_min"),
         "max_pages": pages,
+        "bundesland": profile.get("bundesland"),
+        "federated_state_id": profile.get("federated_state_id"),
+        "restrict_to_bundesland": bool(profile.get("restrict_to_bundesland")),
     }
     listings, provider_errors = await orchestrator.fetch_all(search_criteria)
     await upsert_listings(listings)

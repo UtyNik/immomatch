@@ -182,6 +182,8 @@ class WGGesuchtProvider(BaseProvider):
         budget_max = search_criteria.get("budget_max")
         rooms_min = search_criteria.get("rooms_min")
         radius = int(search_criteria.get("radius") or 0)
+        restrict_land = bool(search_criteria.get("restrict_to_bundesland"))
+        preferred_state_id = str(search_criteria.get("federated_state_id") or "").strip()
 
         listings: list[ListingData] = []
         seen_ids: set[str] = set()
@@ -195,6 +197,13 @@ class WGGesuchtProvider(BaseProvider):
             city_info = await _resolve_city(client, city)
             if city_info is None:
                 raise RuntimeError(f"WG-Gesucht: город не найден — {city!r}")
+            if preferred_state_id and not city_info.federated_state_id:
+                city_info = _CityInfo(
+                    city_id=city_info.city_id,
+                    city_name=city_info.city_name,
+                    slug=city_info.slug,
+                    federated_state_id=preferred_state_id,
+                )
 
             search_cities = [city_info]
             categories = _categories_for_search(rooms_min)
@@ -212,7 +221,12 @@ class WGGesuchtProvider(BaseProvider):
             )
 
             if radius > 0 and len(listings) < _RADIUS_EXPAND_THRESHOLD:
-                extra_cities = await _resolve_radius_cities(client, city_info, radius)
+                extra_cities = await _resolve_radius_cities(
+                    client,
+                    city_info,
+                    radius,
+                    restrict_to_bundesland=restrict_land,
+                )
                 extra_cities = [
                     item
                     for item in extra_cities
@@ -243,7 +257,12 @@ class WGGesuchtProvider(BaseProvider):
             if not listings or html_blocked:
                 sitemap_cities = list(search_cities)
                 if radius > 0 and len(sitemap_cities) == 1:
-                    extra = await _resolve_radius_cities(client, city_info, radius)
+                    extra = await _resolve_radius_cities(
+                        client,
+                        city_info,
+                        radius,
+                        restrict_to_bundesland=restrict_land,
+                    )
                     for item in extra:
                         if item.city_id not in {c.city_id for c in sitemap_cities}:
                             sitemap_cities.append(item)
@@ -744,6 +763,8 @@ async def _resolve_radius_cities(
     client: httpx.AsyncClient,
     primary: _CityInfo,
     radius_km: int,
+    *,
+    restrict_to_bundesland: bool = True,
 ) -> list[_CityInfo]:
     """Соседние города WG-Gesucht строго в пределах радиуса Umkreis."""
     if radius_km <= 0:
@@ -770,7 +791,8 @@ async def _resolve_radius_cities(
             )
             continue
         if (
-            primary.federated_state_id
+            restrict_to_bundesland
+            and primary.federated_state_id
             and city.federated_state_id
             and city.federated_state_id != primary.federated_state_id
         ):

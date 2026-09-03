@@ -13,6 +13,7 @@ class OnboardingStates(StatesGroup):
     first_name = State()
     last_name = State()
     city = State()
+    bundesland_scope = State()
     radius = State()
     budget = State()
     rooms = State()

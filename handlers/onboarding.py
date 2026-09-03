@@ -23,6 +23,7 @@ from handlers.common import Sender, drop_keyboard, sender
 from handlers.feedback import CB_FEEDBACK_HINT
 from handlers.start import beta_intro_text
 from keyboards import CB_AUTO_SEARCH, CB_SEARCH, PROFILE_BUTTON_TEXTS, profile_reply_keyboard
+from services.geo import resolve_city_in_germany
 from services.translator import normalize_and_translate_user_input
 from services.user_limits import can_enable_auto_search
 from states import OnboardingStates
@@ -77,6 +78,8 @@ CB_EDIT_BACK: Final[str] = "edit:back"
 CB_RADIUS_PREFIX: Final[str] = "radius:"
 CB_GENDER_MALE: Final[str] = "gender_male"
 CB_GENDER_FEMALE: Final[str] = "gender_female"
+CB_BUNDESLAND_ONLY: Final[str] = "bundesland:only"
+CB_BUNDESLAND_ANY: Final[str] = "bundesland:any"
 # callback_data кнопки → значение household_type в БД.
 HTYPE_CALLBACKS: Final[dict[str, str]] = {
     "htype_partner_female": "partner_female",
@@ -88,6 +91,7 @@ EDITABLE_FIELDS: Final[tuple[str, ...]] = (
     "name",
     "gender",
     "city",
+    "bundesland",
     "radius",
     "budget",
     "rooms",
@@ -114,6 +118,9 @@ _SEARCH_RESET_FIELDS: Final[frozenset[str]] = frozenset(
         "household_size",
         "household_type",
         "has_pets",
+        "bundesland",
+        "federated_state_id",
+        "restrict_to_bundesland",
     }
 )
 
@@ -168,6 +175,15 @@ def radius_keyboard(lang: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for km in SEARCH_RADII:
         builder.button(text=t(lang, f"btn_radius_{km}"), callback_data=f"{CB_RADIUS_PREFIX}{km}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def bundesland_scope_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Ограничить поиск одной землёй или нет."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=t(lang, "btn_bundesland_only"), callback_data=CB_BUNDESLAND_ONLY)
+    builder.button(text=t(lang, "btn_bundesland_any"), callback_data=CB_BUNDESLAND_ANY)
     builder.adjust(1)
     return builder.as_markup()
 
@@ -285,6 +301,17 @@ def render_profile(lang: str, profile: dict[str, Any]) -> str:
     else:
         city_shown = empty
 
+    bundesland = str(profile.get("bundesland") or "").strip()
+    if bundesland:
+        land_key = (
+            "f_bundesland_only"
+            if profile.get("restrict_to_bundesland")
+            else "f_bundesland_any"
+        )
+        land_shown = t(lang, land_key, name=html.quote(bundesland))
+    else:
+        land_shown = empty
+
     gender = parse_applicant_gender(profile.get("applicant_gender"))
     gender_icon = "👨" if gender == "male" else "👩" if gender == "female" else "👤"
     gender_label = t(lang, f"gender_{gender}") if gender else empty
@@ -308,6 +335,7 @@ def render_profile(lang: str, profile: dict[str, Any]) -> str:
         f"{gender_icon} <b>{t(lang, 'f_applicant')}:</b> {gender_label} | "
         f"👥 <b>{t(lang, 'f_household')}:</b> {household_label}",
         f"🏙 <b>{t(lang, 'f_city')}:</b> {city_shown}",
+        f"🗺 <b>{t(lang, 'f_bundesland')}:</b> {land_shown}",
         f"💶 <b>{t(lang, 'f_budget')}:</b> {money(profile.get('budget_max'))}",
         f"🚪 <b>{t(lang, 'f_rooms')}:</b> {rooms or empty}",
         f"📐 <b>{t(lang, 'f_sqm')}:</b> {_format_area_range(lang, profile, empty)}",
@@ -445,6 +473,11 @@ async def prompt_missing_profile_fields(
     if profile.get("is_employed") is None:
         await prompt_missing_employed(send, state, lang, announce=announce)
         return True
+    if not str(profile.get("bundesland") or "").strip() or profile.get(
+        "restrict_to_bundesland"
+    ) is None:
+        await prompt_missing_bundesland(send, state, lang, profile, announce=announce)
+        return True
     return False
 
 
@@ -457,6 +490,54 @@ async def prompt_missing_employed(
     if announce:
         await send(t(lang, "household_missing"))
     await send(t(lang, "ask_employed"), reply_markup=yes_no_keyboard(lang))
+
+
+async def prompt_missing_bundesland(
+    send: Sender,
+    state: FSMContext,
+    lang: str,
+    profile: dict[str, Any],
+    *,
+    announce: bool = True,
+) -> None:
+    """Определяет землю по сохранённому городу и спрашивает ограничение."""
+    city = str(profile.get("city_de") or profile.get("city") or "").strip()
+    if announce:
+        await send(t(lang, "household_missing"))
+    if not city:
+        await state.set_state(OnboardingStates.city)
+        await state.update_data(language=lang, city_only=True)
+        await send(t(lang, "ask_city"))
+        return
+
+    geo = await resolve_city_in_germany(
+        city,
+        first_name=str(profile.get("first_name") or ""),
+        last_name=str(profile.get("last_name") or ""),
+    )
+    if geo is None:
+        await state.set_state(OnboardingStates.city)
+        await state.update_data(language=lang, city_only=True)
+        await send(t(lang, "err_city_unknown"))
+        await send(t(lang, "ask_city"))
+        return
+
+    await state.set_state(OnboardingStates.bundesland_scope)
+    await state.update_data(
+        language=lang,
+        bundesland_only=True,
+        city=str(profile.get("city") or geo.city_de),
+        city_de=geo.city_de,
+        bundesland=geo.bundesland,
+        federated_state_id=geo.federated_state_id,
+    )
+    await send(
+        t(lang, "city_located", city=html.quote(geo.city_de), bundesland=html.quote(geo.bundesland))
+    )
+    await send(
+        t(lang, "ask_bundesland_scope", bundesland=html.quote(geo.bundesland)),
+        reply_markup=bundesland_scope_keyboard(lang),
+    )
 
 
 async def _after_partial_save(
@@ -474,12 +555,12 @@ async def _after_partial_save(
 
 def _normalize_search_field(key: str, value: Any) -> Any:
     """Приводит поле фильтра к виду, в котором можно сравнить «было / стало»."""
-    if key in {"city", "city_de", "household_type"}:
+    if key in {"city", "city_de", "household_type", "bundesland", "federated_state_id"}:
         text = str(value or "").strip().casefold()
         return text or None
     if key == "search_radius":
         return parse_search_radius(value)
-    if key == "has_pets":
+    if key in {"has_pets", "restrict_to_bundesland"}:
         return None if value is None else bool(value)
     if key in {"budget_max", "household_size"}:
         if value is None or value == "":
@@ -726,7 +807,7 @@ async def _finish_onboarding(state: FSMContext, user: User, send: Sender) -> Non
         "first_name": normalized["first_name_latin"],
         "last_name": normalized["last_name_latin"],
         "city": city,
-        "city_de": normalized["city_de"] or city,
+        "city_de": str(data.get("city_de") or normalized["city_de"] or city),
         "search_radius": parse_search_radius(data.get("search_radius")),
         "applicant_gender": parse_applicant_gender(data.get("applicant_gender")),
         "budget_max": data.get("budget_max"),
@@ -741,6 +822,9 @@ async def _finish_onboarding(state: FSMContext, user: User, send: Sender) -> Non
         "has_pets": data.get("has_pets"),
         "net_income": data.get("net_income"),
         "custom_notes": data.get("custom_notes"),
+        "bundesland": data.get("bundesland"),
+        "federated_state_id": data.get("federated_state_id"),
+        "restrict_to_bundesland": data.get("restrict_to_bundesland"),
         "is_active": True,
     }
 
@@ -764,14 +848,34 @@ async def _finish_onboarding(state: FSMContext, user: User, send: Sender) -> Non
 async def _save_city_and_radius(
     user: User, lang: str, state: FSMContext, send: Sender
 ) -> None:
-    """Сохраняет новый город (с нормализацией) и радиус, сбрасывает seen."""
+    """Сохраняет новый город (с нормализацией), землю и радиус, сбрасывает seen."""
     data = await state.get_data()
     city = str(data.get("city") or "").strip()
     km = parse_search_radius(data.get("search_radius"))
     profile = await get_user(user.id)
     first = str((profile or {}).get("first_name") or "")
     last = str((profile or {}).get("last_name") or "")
-    normalized = await _normalize_identity(first, last, city)
+    city_de = str(data.get("city_de") or "").strip()
+    bundesland = str(data.get("bundesland") or "").strip()
+    state_id = str(data.get("federated_state_id") or "").strip()
+    if not city_de or not bundesland:
+        geo = await resolve_city_in_germany(city, first_name=first, last_name=last)
+        if geo is None:
+            await send(t(lang, "err_city_unknown"))
+            await state.set_state(OnboardingStates.city)
+            await state.update_data(language=lang, city_only=True)
+            await send(t(lang, "ask_city"))
+            return
+        city_de = geo.city_de
+        bundesland = geo.bundesland
+        state_id = geo.federated_state_id
+    else:
+        normalized = await _normalize_identity(first, last, city)
+        if normalized.get("first_name_latin"):
+            first = normalized["first_name_latin"]
+        if normalized.get("last_name_latin"):
+            last = normalized["last_name_latin"]
+
     await _patch_profile(
         user,
         lang,
@@ -779,17 +883,24 @@ async def _save_city_and_radius(
         send,
         {
             "city": city,
-            "city_de": normalized["city_de"] or city,
+            "city_de": city_de or city,
             "search_radius": km,
-            "first_name": normalized["first_name_latin"] or (profile or {}).get("first_name"),
-            "last_name": normalized["last_name_latin"] or (profile or {}).get("last_name"),
+            "bundesland": bundesland or None,
+            "federated_state_id": state_id or None,
+            "restrict_to_bundesland": bool(data.get("restrict_to_bundesland")),
+            "first_name": first or (profile or {}).get("first_name"),
+            "last_name": last or (profile or {}).get("last_name"),
         },
         reset_seen=True,
     )
 
 
 async def _begin_field_edit(
-    send: Sender, state: FSMContext, lang: str, field: str
+    send: Sender,
+    state: FSMContext,
+    lang: str,
+    field: str,
+    profile: dict[str, Any] | None = None,
 ) -> None:
     """Запускает вопрос только по выбранному полю готовой анкеты."""
     await state.clear()
@@ -805,6 +916,12 @@ async def _begin_field_edit(
         await state.set_state(OnboardingStates.city)
         await state.update_data(language=lang, city_only=True)
         await send(t(lang, "ask_city"))
+        return
+    if field == "bundesland":
+        if profile is None:
+            await send(t(lang, "no_profile"))
+            return
+        await prompt_missing_bundesland(send, state, lang, profile, announce=False)
         return
     if field == "radius":
         await state.set_state(OnboardingStates.radius)
@@ -962,7 +1079,7 @@ async def choose_edit_field(
         return
 
     await drop_keyboard(callback)
-    await _begin_field_edit(send, state, lang, field)
+    await _begin_field_edit(send, state, lang, field, profile)
     await callback.answer()
 
 
@@ -1130,7 +1247,7 @@ async def process_last_name(message: Message, state: FSMContext) -> None:
 # --------------------------------------------------------------------------- #
 @router.message(OnboardingStates.city, F.text)
 async def process_city(message: Message, state: FSMContext) -> None:
-    """Принимает название города и спрашивает радиус поиска."""
+    """Проверяет город в Германии, показывает землю и спрашивает ограничение."""
     lang = await _lang_of(state)
     city = (message.text or "").strip()
 
@@ -1140,9 +1257,78 @@ async def process_city(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(city=city)
+    data = await state.get_data()
+    geo = await resolve_city_in_germany(
+        city,
+        first_name=str(data.get("first_name") or ""),
+        last_name=str(data.get("last_name") or ""),
+    )
+    if geo is None:
+        await message.answer(t(lang, "err_city_unknown"))
+        return
+
+    await state.update_data(
+        city=city,
+        city_de=geo.city_de,
+        bundesland=geo.bundesland,
+        federated_state_id=geo.federated_state_id,
+    )
+    await message.answer(
+        t(
+            lang,
+            "city_located",
+            city=html.quote(geo.city_de),
+            bundesland=html.quote(geo.bundesland),
+        )
+    )
+    await state.set_state(OnboardingStates.bundesland_scope)
+    await message.answer(
+        t(lang, "ask_bundesland_scope", bundesland=html.quote(geo.bundesland)),
+        reply_markup=bundesland_scope_keyboard(lang),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Шаг 4b: ограничение по земле
+# --------------------------------------------------------------------------- #
+@router.callback_query(
+    OnboardingStates.bundesland_scope,
+    F.data.in_({CB_BUNDESLAND_ONLY, CB_BUNDESLAND_ANY}),
+)
+async def process_bundesland_scope(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    """Фиксирует поиск только в земле или без ограничения."""
+    lang = await _lang_of(state)
+    restrict = callback.data == CB_BUNDESLAND_ONLY
+    await state.update_data(restrict_to_bundesland=restrict)
+    await drop_keyboard(callback)
+    data = await state.get_data()
+    send = sender(callback, bot)
+
+    if data.get("bundesland_only") and callback.from_user:
+        patch = {
+            "city_de": data.get("city_de"),
+            "bundesland": data.get("bundesland"),
+            "federated_state_id": data.get("federated_state_id") or None,
+            "restrict_to_bundesland": restrict,
+        }
+        if data.get("city"):
+            patch["city"] = data.get("city")
+        await _patch_profile(
+            callback.from_user,
+            lang,
+            state,
+            send,
+            patch,
+            reset_seen=True,
+        )
+        await callback.answer()
+        return
+
     await state.set_state(OnboardingStates.radius)
-    await message.answer(t(lang, "ask_radius"), reply_markup=radius_keyboard(lang))
+    await send(t(lang, "ask_radius"), reply_markup=radius_keyboard(lang))
+    await callback.answer()
 
 
 # --------------------------------------------------------------------------- #

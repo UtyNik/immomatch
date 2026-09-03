@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS users (
     search_radius          INTEGER   NOT NULL DEFAULT 0,
     applicant_gender       TEXT,
     household_type         TEXT,
+    bundesland             TEXT,
+    federated_state_id     TEXT,
+    restrict_to_bundesland INTEGER,
     is_active              INTEGER   NOT NULL DEFAULT 1,
     is_auto_search_enabled INTEGER   NOT NULL DEFAULT 1,
     deep_search_done       INTEGER   NOT NULL DEFAULT 0,
@@ -67,6 +70,9 @@ _USERS_ADDED_COLUMNS: Final[dict[str, str]] = {
     "household_type": "TEXT",
     "deep_search_done": "INTEGER NOT NULL DEFAULT 0",
     "is_employed": "INTEGER",
+    "bundesland": "TEXT",
+    "federated_state_id": "TEXT",
+    "restrict_to_bundesland": "INTEGER",
 }
 
 # Составной первичный ключ сам защищает от дублей: повторная отметка того же
@@ -116,13 +122,14 @@ INSERT INTO users (
     user_id, username, language, city, city_de, first_name, last_name,
     search_radius, budget_max, rooms_min, sqm_min, sqm_max, household_size,
     household_type, applicant_gender, has_wbs, uses_jobcenter, is_employed,
-    has_pets, net_income, custom_notes, is_active
+    has_pets, net_income, custom_notes, bundesland, federated_state_id,
+    restrict_to_bundesland, is_active
 ) VALUES (
     :user_id, :username, :language, :city, :city_de, :first_name, :last_name,
     :search_radius, :budget_max, :rooms_min, :sqm_min, :sqm_max,
     :household_size, :household_type, :applicant_gender, :has_wbs,
     :uses_jobcenter, :is_employed, :has_pets, :net_income, :custom_notes,
-    :is_active
+    :bundesland, :federated_state_id, :restrict_to_bundesland, :is_active
 )
 ON CONFLICT(user_id) DO UPDATE SET
     username           = excluded.username,
@@ -145,6 +152,9 @@ ON CONFLICT(user_id) DO UPDATE SET
     has_pets           = excluded.has_pets,
     net_income         = excluded.net_income,
     custom_notes       = excluded.custom_notes,
+    bundesland         = excluded.bundesland,
+    federated_state_id = excluded.federated_state_id,
+    restrict_to_bundesland = excluded.restrict_to_bundesland,
     is_active          = excluded.is_active
 """
 
@@ -154,6 +164,7 @@ _BOOL_COLUMNS: Final[tuple[str, ...]] = (
     "uses_jobcenter",
     "is_employed",
     "has_pets",
+    "restrict_to_bundesland",
     "is_active",
     "is_auto_search_enabled",
     "deep_search_done",
@@ -282,6 +293,13 @@ async def save_user_profile(user_data: dict[str, Any]) -> None:
         "has_pets": _to_int_flag(user_data.get("has_pets")),
         "net_income": _to_optional_income(user_data.get("net_income")),
         "custom_notes": user_data.get("custom_notes"),
+        "bundesland": (str(user_data["bundesland"]).strip() or None)
+        if user_data.get("bundesland")
+        else None,
+        "federated_state_id": (str(user_data["federated_state_id"]).strip() or None)
+        if user_data.get("federated_state_id")
+        else None,
+        "restrict_to_bundesland": _to_int_flag(user_data.get("restrict_to_bundesland")),
         "is_active": _to_int_flag(user_data.get("is_active", True)) or 0,
     }
 

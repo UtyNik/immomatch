@@ -42,6 +42,21 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "🏙 У якому <b>місті</b> шукаєте житло?\n\n"
             "<i>Наприклад: Berlin, München, Hamburg</i>"
         ),
+        "err_city_unknown": (
+            "⚠️ Не знайшов таке місто в Німеччині. Перевірте написання "
+            "і спробуйте ще раз (наприклад: <code>Offenburg</code>)."
+        ),
+        "city_located": (
+            "✅ Місто: <b>{city}</b>\n"
+            "📍 Знаходиться в землі <b>{bundesland}</b>."
+        ),
+        "ask_bundesland_scope": (
+            "🗺 Шукати оголошення <b>тільки в землі {bundesland}</b>?\n\n"
+            "<i>Якщо так — міста з інших земель не потраплять у видачу, "
+            "навіть якщо радіус пошуку їх зачіпає.</i>"
+        ),
+        "btn_bundesland_only": "✅ Тільки ця земля",
+        "btn_bundesland_any": "❌ Без обмеження по землі",
         "ask_budget": (
             "💶 Який ваш <b>максимальний бюджет</b> (тепла оренда, Warmmiete) у євро?\n\n"
             "<i>Введіть число, наприклад: <code>1200</code></i>"
@@ -114,6 +129,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_name": "👤 Ім'я",
         "btn_edit_gender": "👤 Стать",
         "btn_edit_city": "🏙 Місто",
+        "btn_edit_bundesland": "🗺 Земля",
         "btn_edit_radius": "📍 Радіус",
         "btn_edit_budget": "💶 Бюджет",
         "btn_edit_rooms": "🚪 Кімнати",
@@ -227,6 +243,9 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "household_with_type": "{count} ({kind})",
         "f_city": "Місто",
         "city_radius": "{city} (+{km} км)",
+        "f_bundesland": "Земля",
+        "f_bundesland_only": "{name} (тільки ця земля)",
+        "f_bundesland_any": "{name} (без обмеження)",
         "f_budget": "Бюджет (Warm)",
         "f_rooms": "Мінімум кімнат",
         "f_sqm": "Площа",
@@ -251,6 +270,21 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "🏙 В каком <b>городе</b> ищете жильё?\n\n"
             "<i>Например: Berlin, München, Hamburg</i>"
         ),
+        "err_city_unknown": (
+            "⚠️ Не нашёл такой город в Германии. Проверьте написание "
+            "и попробуйте ещё раз (например: <code>Offenburg</code>)."
+        ),
+        "city_located": (
+            "✅ Город: <b>{city}</b>\n"
+            "📍 Находится в земле <b>{bundesland}</b>."
+        ),
+        "ask_bundesland_scope": (
+            "🗺 Искать объявления <b>только в земле {bundesland}</b>?\n\n"
+            "<i>Если да — города из других земель не попадут в выдачу, "
+            "даже если радиус поиска их затрагивает.</i>"
+        ),
+        "btn_bundesland_only": "✅ Только эта земля",
+        "btn_bundesland_any": "❌ Без ограничения по земле",
         "ask_budget": (
             "💶 Какой у вас <b>максимальный бюджет</b> (тёплая аренда, Warmmiete) в евро?\n\n"
             "<i>Введите число, например: <code>1200</code></i>"
@@ -323,6 +357,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_name": "👤 Имя",
         "btn_edit_gender": "👤 Пол",
         "btn_edit_city": "🏙 Город",
+        "btn_edit_bundesland": "🗺 Земля",
         "btn_edit_radius": "📍 Радиус",
         "btn_edit_budget": "💶 Бюджет",
         "btn_edit_rooms": "🚪 Комнаты",
@@ -436,6 +471,9 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "household_with_type": "{count} ({kind})",
         "f_city": "Город",
         "city_radius": "{city} (+{km} км)",
+        "f_bundesland": "Земля",
+        "f_bundesland_only": "{name} (только эта земля)",
+        "f_bundesland_any": "{name} (без ограничения)",
         "f_budget": "Бюджет (Warm)",
         "f_rooms": "Минимум комнат",
         "f_sqm": "Площадь",
@@ -460,6 +498,21 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "🏙 Which <b>city</b> are you looking in?\n\n"
             "<i>For example: Berlin, München, Hamburg</i>"
         ),
+        "err_city_unknown": (
+            "⚠️ I couldn't find that city in Germany. Check the spelling "
+            "and try again (for example: <code>Offenburg</code>)."
+        ),
+        "city_located": (
+            "✅ City: <b>{city}</b>\n"
+            "📍 Located in the state of <b>{bundesland}</b>."
+        ),
+        "ask_bundesland_scope": (
+            "🗺 Search listings <b>only in {bundesland}</b>?\n\n"
+            "<i>If yes — towns from other states will be excluded, "
+            "even if the search radius reaches them.</i>"
+        ),
+        "btn_bundesland_only": "✅ This state only",
+        "btn_bundesland_any": "❌ No state restriction",
         "ask_budget": (
             "💶 What is your <b>maximum budget</b> (warm rent, Warmmiete) in euros?\n\n"
             "<i>Enter a number, for example: <code>1200</code></i>"
@@ -533,6 +586,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_name": "👤 Name",
         "btn_edit_gender": "👤 Gender",
         "btn_edit_city": "🏙 City",
+        "btn_edit_bundesland": "🗺 State",
         "btn_edit_radius": "📍 Radius",
         "btn_edit_budget": "💶 Budget",
         "btn_edit_rooms": "🚪 Rooms",
@@ -643,6 +697,9 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "household_with_type": "{count} ({kind})",
         "f_city": "City",
         "city_radius": "{city} (+{km} km)",
+        "f_bundesland": "State",
+        "f_bundesland_only": "{name} (this state only)",
+        "f_bundesland_any": "{name} (no restriction)",
         "f_budget": "Budget (warm)",
         "f_rooms": "Min. rooms",
         "f_sqm": "Floor area",

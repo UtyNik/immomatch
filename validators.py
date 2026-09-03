@@ -309,4 +309,25 @@ def city_mismatch_reason(
                 return f"город {shown} вне зоны {city} (+{radius} км)"
     # Umkreis: соседи (Achern, Kippenheim) — ожидаемый результат поиска.
     # На странице объявления пометки «(N km)» уже нет, карточку не режем.
+    if profile.get("restrict_to_bundesland") and profile.get("bundesland"):
+        # Ленивый импорт: services.geo → translator → ai_agent → validators.
+        from services.geo import bundesland_from_address, same_bundesland
+
+        raw = apartment.get("raw_data")
+        listing_land = None
+        if isinstance(raw, dict):
+            listing_land = raw.get("bundesland") or raw.get("listing_bundesland")
+            if raw.get("outside_bundesland"):
+                return (
+                    f"земля объявления вне {profile.get('bundesland')} "
+                    f"({shown})"
+                )
+        if not listing_land:
+            listing_land = bundesland_from_address(f"{address} {title}")
+        if listing_land and not same_bundesland(
+            str(listing_land), str(profile.get("bundesland"))
+        ):
+            return (
+                f"земля {listing_land} ≠ {profile.get('bundesland')} ({shown})"
+            )
     return None

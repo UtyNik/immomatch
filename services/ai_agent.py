@@ -54,7 +54,9 @@ Reject the listing only in these cases:
   than 20% below sqm_min or above sqm_max, or (only if search_radius_km
   is 0) the flat is in another city.
   If search_radius_km > 0, nearby towns inside that Umkreis are valid:
-  Achern, Offenburg, Kippenheim next to Lahr must NOT be rejected for city;
+  Achern, Offenburg, Kippenheim next to Lahr must NOT be rejected for city
+  — unless restrict_to_bundesland is true and the town is clearly in
+  another Bundesland than tenant.bundesland;
 - the tenant has pets and the listing forbids them ("keine Haustiere");
 - the listing is gender-restricted against this tenant. Use applicant_gender:
   "nur für Frauen", "nur Damen", "nur Studentinnen", "Frauen-WG",
@@ -521,6 +523,8 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "uses_jobcenter": user_profile.get("uses_jobcenter"),
         "is_employed": user_profile.get("is_employed"),
         "has_pets": user_profile.get("has_pets"),
+        "bundesland": user_profile.get("bundesland"),
+        "restrict_to_bundesland": user_profile.get("restrict_to_bundesland"),
         "notes": user_profile.get("custom_notes"),
     }
     net_income = _optional_net_income(user_profile.get("net_income"))
