@@ -66,6 +66,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ask_jobcenter": (
             "🏛 Чи оплачується оренда через <b>Jobcenter</b> / соціальну допомогу?"
         ),
+        "ask_employed": "💼 Чи маєте ви зараз <b>роботу</b> (працевлаштовані)?",
         "ask_pets": "🐾 Чи є у вас <b>домашні тварини</b>?",
         "ask_income": (
             "💰 Який <b>чистий дохід</b> сім'ї на місяць (Nettoeinkommen) у євро?\n\n"
@@ -120,6 +121,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_household": "👥 Мешканці",
         "btn_edit_wbs": "📄 WBS",
         "btn_edit_jobcenter": "🏛 Jobcenter",
+        "btn_edit_employed": "💼 Робота",
         "btn_edit_pets": "🐾 Тварини",
         "btn_edit_income": "💰 Дохід",
         "btn_edit_notes": "📝 Побажання",
@@ -234,6 +236,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "f_household": "Мешканці",
         "f_wbs": "WBS",
         "f_jobcenter": "Jobcenter",
+        "f_employed": "Робота",
         "f_pets": "Тварини",
         "f_income": "Дохід (Netto)",
         "f_income_skipped": "Не вказано (пропущено)",
@@ -272,6 +275,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ask_jobcenter": (
             "🏛 Оплачивается ли аренда через <b>Jobcenter</b> / социальную помощь?"
         ),
+        "ask_employed": "💼 Есть ли у вас сейчас <b>работа</b> (трудоустроены)?",
         "ask_pets": "🐾 Есть ли у вас <b>домашние животные</b>?",
         "ask_income": (
             "💰 Какой <b>чистый доход</b> семьи в месяц (Nettoeinkommen) в евро?\n\n"
@@ -326,6 +330,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_household": "👥 Жильцы",
         "btn_edit_wbs": "📄 WBS",
         "btn_edit_jobcenter": "🏛 Jobcenter",
+        "btn_edit_employed": "💼 Работа",
         "btn_edit_pets": "🐾 Животные",
         "btn_edit_income": "💰 Доход",
         "btn_edit_notes": "📝 Пожелания",
@@ -440,6 +445,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "f_household": "Жильцы",
         "f_wbs": "WBS",
         "f_jobcenter": "Jobcenter",
+        "f_employed": "Работа",
         "f_pets": "Животные",
         "f_income": "Доход (Netto)",
         "f_income_skipped": "Не указан (пропущено)",
@@ -478,6 +484,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "ask_jobcenter": (
             "🏛 Is the rent paid through <b>Jobcenter</b> / social benefits?"
         ),
+        "ask_employed": "💼 Do you currently have a <b>job</b> (are you employed)?",
         "ask_pets": "🐾 Do you have any <b>pets</b>?",
         "ask_income": (
             "💰 What is your household <b>net income</b> per month "
@@ -533,6 +540,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "btn_edit_household": "👥 Occupants",
         "btn_edit_wbs": "📄 WBS",
         "btn_edit_jobcenter": "🏛 Jobcenter",
+        "btn_edit_employed": "💼 Job",
         "btn_edit_pets": "🐾 Pets",
         "btn_edit_income": "💰 Income",
         "btn_edit_notes": "📝 Preferences",
@@ -644,6 +652,7 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
         "f_household": "Occupants",
         "f_wbs": "WBS",
         "f_jobcenter": "Jobcenter",
+        "f_employed": "Job",
         "f_pets": "Pets",
         "f_income": "Income (net)",
         "f_income_skipped": "Not specified (skipped)",

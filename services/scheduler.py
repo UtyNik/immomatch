@@ -32,6 +32,7 @@ def _profile_ready(profile: dict[str, Any]) -> bool:
         and profile.get("household_size") is not None
         and profile.get("has_wbs") is not None
         and profile.get("uses_jobcenter") is not None
+        and profile.get("is_employed") is not None
     ):
         return False
     try:

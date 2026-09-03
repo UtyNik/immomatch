@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
     household_size INTEGER,
     has_wbs        INTEGER,
     uses_jobcenter INTEGER,
+    is_employed            INTEGER,
     has_pets               INTEGER,
     net_income             INTEGER,
     custom_notes           TEXT,
@@ -65,6 +66,7 @@ _USERS_ADDED_COLUMNS: Final[dict[str, str]] = {
     "applicant_gender": "TEXT",
     "household_type": "TEXT",
     "deep_search_done": "INTEGER NOT NULL DEFAULT 0",
+    "is_employed": "INTEGER",
 }
 
 # Составной первичный ключ сам защищает от дублей: повторная отметка того же
@@ -113,13 +115,14 @@ _UPSERT_USER: Final[str] = """
 INSERT INTO users (
     user_id, username, language, city, city_de, first_name, last_name,
     search_radius, budget_max, rooms_min, sqm_min, sqm_max, household_size,
-    household_type, applicant_gender, has_wbs, uses_jobcenter, has_pets,
-    net_income, custom_notes, is_active
+    household_type, applicant_gender, has_wbs, uses_jobcenter, is_employed,
+    has_pets, net_income, custom_notes, is_active
 ) VALUES (
     :user_id, :username, :language, :city, :city_de, :first_name, :last_name,
     :search_radius, :budget_max, :rooms_min, :sqm_min, :sqm_max,
     :household_size, :household_type, :applicant_gender, :has_wbs,
-    :uses_jobcenter, :has_pets, :net_income, :custom_notes, :is_active
+    :uses_jobcenter, :is_employed, :has_pets, :net_income, :custom_notes,
+    :is_active
 )
 ON CONFLICT(user_id) DO UPDATE SET
     username           = excluded.username,
@@ -138,6 +141,7 @@ ON CONFLICT(user_id) DO UPDATE SET
     applicant_gender   = excluded.applicant_gender,
     has_wbs            = excluded.has_wbs,
     uses_jobcenter     = excluded.uses_jobcenter,
+    is_employed        = excluded.is_employed,
     has_pets           = excluded.has_pets,
     net_income         = excluded.net_income,
     custom_notes       = excluded.custom_notes,
@@ -148,6 +152,7 @@ ON CONFLICT(user_id) DO UPDATE SET
 _BOOL_COLUMNS: Final[tuple[str, ...]] = (
     "has_wbs",
     "uses_jobcenter",
+    "is_employed",
     "has_pets",
     "is_active",
     "is_auto_search_enabled",
@@ -273,6 +278,7 @@ async def save_user_profile(user_data: dict[str, Any]) -> None:
         "household_size": user_data.get("household_size"),
         "has_wbs": _to_int_flag(user_data.get("has_wbs")),
         "uses_jobcenter": _to_int_flag(user_data.get("uses_jobcenter")),
+        "is_employed": _to_int_flag(user_data.get("is_employed")),
         "has_pets": _to_int_flag(user_data.get("has_pets")),
         "net_income": _to_optional_income(user_data.get("net_income")),
         "custom_notes": user_data.get("custom_notes"),

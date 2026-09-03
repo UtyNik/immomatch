@@ -95,6 +95,7 @@ EDITABLE_FIELDS: Final[tuple[str, ...]] = (
     "household",
     "wbs",
     "jobcenter",
+    "employed",
     "pets",
     "income",
     "notes",
@@ -312,6 +313,7 @@ def render_profile(lang: str, profile: dict[str, Any]) -> str:
         f"📐 <b>{t(lang, 'f_sqm')}:</b> {_format_area_range(lang, profile, empty)}",
         f"📄 <b>{t(lang, 'f_wbs')}:</b> {flag(profile.get('has_wbs'))}",
         f"🏛 <b>{t(lang, 'f_jobcenter')}:</b> {flag(profile.get('uses_jobcenter'))}",
+        f"💼 <b>{t(lang, 'f_employed')}:</b> {flag(profile.get('is_employed'))}",
         f"🐾 <b>{t(lang, 'f_pets')}:</b> {flag(profile.get('has_pets'))}",
         f"💰 <b>{t(lang, 'f_income')}:</b> {_format_income(lang, profile.get('net_income'))}",
         f"📝 <b>{t(lang, 'f_notes')}:</b> "
@@ -440,7 +442,21 @@ async def prompt_missing_profile_fields(
     if profile.get("has_wbs") is None or profile.get("uses_jobcenter") is None:
         await prompt_missing_support(send, state, lang, announce=announce)
         return True
+    if profile.get("is_employed") is None:
+        await prompt_missing_employed(send, state, lang, announce=announce)
+        return True
     return False
+
+
+async def prompt_missing_employed(
+    send: Sender, state: FSMContext, lang: str, *, announce: bool = True
+) -> None:
+    """Спрашивает про работу у тех, кто заполнил анкету раньше."""
+    await state.set_state(OnboardingStates.employed)
+    await state.update_data(language=lang, employed_only=True)
+    if announce:
+        await send(t(lang, "household_missing"))
+    await send(t(lang, "ask_employed"), reply_markup=yes_no_keyboard(lang))
 
 
 async def _after_partial_save(
@@ -721,6 +737,7 @@ async def _finish_onboarding(state: FSMContext, user: User, send: Sender) -> Non
         "household_type": parse_household_type(data.get("household_type")),
         "has_wbs": data.get("has_wbs"),
         "uses_jobcenter": data.get("uses_jobcenter"),
+        "is_employed": data.get("is_employed"),
         "has_pets": data.get("has_pets"),
         "net_income": data.get("net_income"),
         "custom_notes": data.get("custom_notes"),
@@ -819,6 +836,11 @@ async def _begin_field_edit(
         await state.set_state(OnboardingStates.jobcenter)
         await state.update_data(language=lang, jobcenter_only=True)
         await send(t(lang, "ask_jobcenter"), reply_markup=yes_no_keyboard(lang))
+        return
+    if field == "employed":
+        await state.set_state(OnboardingStates.employed)
+        await state.update_data(language=lang, employed_only=True)
+        await send(t(lang, "ask_employed"), reply_markup=yes_no_keyboard(lang))
         return
     if field == "pets":
         await state.set_state(OnboardingStates.pets)
@@ -1425,6 +1447,38 @@ async def process_jobcenter(
             state,
             sender(callback, bot),
             {"uses_jobcenter": uses_jobcenter},
+        )
+        await callback.answer()
+        return
+
+    await state.set_state(OnboardingStates.employed)
+    await sender(callback, bot)(
+        t(lang, "ask_employed"), reply_markup=yes_no_keyboard(lang)
+    )
+    await callback.answer()
+
+
+# --------------------------------------------------------------------------- #
+# Шаг: работа / занятость
+# --------------------------------------------------------------------------- #
+@router.callback_query(OnboardingStates.employed, F.data.in_({CB_YES, CB_NO}))
+async def process_employed(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    """Фиксирует наличие работы и продолжает опрос."""
+    lang = await _lang_of(state)
+    is_employed = callback.data == CB_YES
+    await state.update_data(is_employed=is_employed)
+    await drop_keyboard(callback)
+
+    data = await state.get_data()
+    if data.get("employed_only") and callback.from_user:
+        await _patch_profile(
+            callback.from_user,
+            lang,
+            state,
+            sender(callback, bot),
+            {"is_employed": is_employed},
         )
         await callback.answer()
         return

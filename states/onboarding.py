@@ -22,6 +22,7 @@ class OnboardingStates(StatesGroup):
     household_type = State()
     wbs = State()
     jobcenter = State()
+    employed = State()
     pets = State()
     income = State()  # необязательный шаг: можно пропустить → net_income = None
     custom_notes = State()

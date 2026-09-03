@@ -80,6 +80,8 @@ Reject the listing only in these cases:
   true: "kein Jobcenter", "keine Jobcenter", "nur Berufstätige",
   "keine Transferleistungen", "nur Selbstzahler",
   "keine Bürgergeldempfänger";
+- the listing requires employed tenants while is_employed is false:
+  "nur Berufstätige", "nur Erwerbstätige", "nur Angestellte";
 - it is not an ordinary long-term rental of a whole flat. Always reject:
   "Tauschwohnung", "Tauschangebot", "zum Tausch";
   "Ferienwohnung", "Ferienhaus", "Fewo", "Urlaubswohnung", "pro Nacht",
@@ -97,7 +99,9 @@ Reject the listing only in these cases:
 Three rules override everything else:
 
 1. Never infer what the profile does not state. Age, occupation, nationality
-   and smoking are unknown, and a restriction about them blocks nothing.
+   and smoking are unknown unless is_employed is set, and a restriction about
+   them blocks nothing except "nur Berufstätige" / "nur Erwerbstätige" when
+   is_employed is false.
    applicant_gender and household_type ARE known when present: compare them
    with the listing. household_size is the number of people moving in.
    household_type "family" is blocked by "keine Familien" even for two people.
@@ -178,6 +182,15 @@ German grammar is mandatory and follows applicant_gender and household_type:
 Watch articles, cases and declensions: never write "ich bin ruhiger Mieter".
 
 Mention only facts given in the profile, and only those that help:
+- employment is EXPLICIT: tenant.is_employed is true, false or may be
+  absent. If is_employed is false: NEVER write that the tenant works,
+  is employed, berufstätig, angestellt, has a Festanstellung, Arbeitgeber,
+  Job or Stelle. Do not invent a profession. Say nothing about work
+  status unless the listing itself asks and then stay honest (no claim
+  of employment). If is_employed is true, you MAY briefly say the tenant
+  is berufstätig / zuverlässig erwerbstätig, but NEVER invent a job
+  title, company or industry. If is_employed is missing: say nothing
+  about employment.
 - net income is OPTIONAL. tenant.net_income_eur may be a number or null.
   By default NEVER write a concrete income, salary, Nettoeinkommen or
   Gehalt. Ordinary ads do not need this.
@@ -415,6 +428,50 @@ def _drop_income_sentences(letter: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+_EMPLOYMENT_CLAIM = re.compile(
+    r"berufstätig|erwerbstätig|angestellt|festanstellung|"
+    r"\barbeite\b|\barbeitet\b|mein(?:e[rn]?)?\s+arbeitgeber|"
+    r"vollzeit|teilzeit|unbefristet\s+beschäftigt|"
+    r"bin\s+(?:ein[e]?\s+)?(?:arbeitnehmer|mitarbeiter)",
+    re.IGNORECASE,
+)
+
+
+def _drop_employment_sentences(letter: str) -> str:
+    """Убирает предложения, где модель выдаёт арендатора за работающего."""
+    placeholders: list[str] = []
+
+    def _protect(match: re.Match[str]) -> str:
+        placeholders.append(match.group(0))
+        return f"\x00{len(placeholders) - 1}\x00"
+
+    def _restore(text: str) -> str:
+        return re.sub(
+            r"\x00(\d+)\x00",
+            lambda match: placeholders[int(match.group(1))],
+            text,
+        )
+
+    protected = _ABBREVIATION_DOT.sub(_protect, letter.strip())
+    chunks = re.split(r"(?<=[.!?])\s+", protected)
+    kept = [
+        _restore(chunk)
+        for chunk in chunks
+        if not _EMPLOYMENT_CLAIM.search(_restore(chunk))
+    ]
+    text = " ".join(kept)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def apply_letter_employment_policy(letter: str, profile: dict[str, Any]) -> str:
+    """Без работы в анкете — никаких «ich bin berufstätig» в письме."""
+    if not letter.strip():
+        return letter
+    if profile.get("is_employed") is False:
+        return _drop_employment_sentences(letter)
+    return letter
+
+
 def apply_letter_income_policy(
     letter: str, profile: dict[str, Any], apartment: dict[str, Any]
 ) -> str:
@@ -462,6 +519,7 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "household_type": user_profile.get("household_type"),
         "has_wbs": user_profile.get("has_wbs"),
         "uses_jobcenter": user_profile.get("uses_jobcenter"),
+        "is_employed": user_profile.get("is_employed"),
         "has_pets": user_profile.get("has_pets"),
         "notes": user_profile.get("custom_notes"),
     }
@@ -884,6 +942,7 @@ async def analyze_apartment_and_generate_letter(
         letter = ""
 
     letter = apply_letter_income_policy(letter, user_profile, apartment)
+    letter = apply_letter_employment_policy(letter, user_profile)
     letter = apply_letter_salutation(letter, salutation_from_listing(apartment))
     letter = apply_letter_signature(letter, user_profile)
     logger.info("Объявление %s подошло, длина письма %d", listing_id, len(letter))
