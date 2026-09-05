@@ -26,13 +26,20 @@ from database import (
 )
 from handlers.common import Sender, delete_quietly, sender
 from handlers.onboarding import prompt_missing_profile_fields
-from keyboards import CB_SEARCH, CB_SEARCH_NEXT, SEARCH_BUTTON_TEXTS, profile_reply_keyboard
+from keyboards import (
+    CB_GEN_LETTER_PREFIX,
+    CB_SEARCH,
+    CB_SEARCH_NEXT,
+    SEARCH_BUTTON_TEXTS,
+    profile_reply_keyboard,
+)
 from scrapers import FOLLOWUP_SEARCH_PAGES, INITIAL_SEARCH_PAGES
 from services import (
-    analyze_apartment_and_generate_letter,
+    analyze_apartment,
     gender_restriction_reason,
     listing_type_reason,
     shared_wg_reason,
+    single_occupancy_reason,
 )
 from services.parsers.base import legacy_dict_storage_id
 from services.deduplicator import apartment_to_listing_data, is_duplicate_listing
@@ -40,7 +47,6 @@ from services.lease_filter import temporary_lease_reason
 from services.listing_price import format_price_line
 from services.listing_time import format_published_ago
 from services.search_orchestrator import get_search_orchestrator
-from services.user_limits import BETA_AI_LETTERS_DAILY, can_generate_letter
 from services.translator import normalize_and_translate_user_input
 from texts import DEFAULT_LANG, t
 from validators import (
@@ -59,9 +65,10 @@ router = Router(name="search")
 # обход анкеты грузим детали со всех собранных страниц, иначе 2-я
 # так и не дойдёт до Warmmiete.
 DETAILS_PER_PAGE: Final[int] = 25
-# Сколько объявлений максимум отправляем в модель за один поиск. Перебор идёт
-# до первого совпадения, но каждая проверка платная, поэтому он ограничен.
+# Сколько объявлений максимум отправляем в модель за один поиск.
 MAX_AI_CHECKS: Final[int] = 5
+# Сколько подходящих карточек максимум отправляем за один цикл (без писем).
+MAX_MATCHES_PER_CYCLE: Final[int] = 5
 # Ограничения на длину частей карточки: у сообщения Telegram лимит 4096 символов.
 MAX_TITLE: Final[int] = 200
 MAX_REASON: Final[int] = 700
@@ -69,17 +76,33 @@ MAX_LETTER: Final[int] = 2500
 
 
 @dataclass(slots=True)
+class MatchItem:
+    """Одно подходящее объявление без Anschreiben."""
+
+    apartment: dict[str, Any]
+    verdict: dict[str, Any]
+
+
+@dataclass(slots=True)
 class FirstMatchResult:
-    """Итог одного прохода поиска до первого совпадения."""
+    """Итог одного прохода поиска (одно или несколько совпадений)."""
 
     apartment: dict[str, Any] | None = None
     verdict: dict[str, Any] | None = None
+    matches: list[MatchItem] | None = None
     checked: int = 0
     filtered: int = 0
     # scraper — сайт не отдал объявления; empty — пустая выдача;
     # ai — сбой модели; limit — суточный потолок.
     failure: str | None = None
     failure_detail: str | None = None
+
+    def all_matches(self) -> list[MatchItem]:
+        if self.matches:
+            return self.matches
+        if self.apartment is not None and self.verdict is not None:
+            return [MatchItem(apartment=self.apartment, verdict=self.verdict)]
+        return []
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -107,7 +130,7 @@ def hard_filter_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> st
     if price is not None and price < MIN_PLAUSIBLE_RENT:
         return f"цена {price} € слишком низкая для долгосрочной аренды"
     if budget is not None and price is not None and price > budget:
-        return f"цена {price} € > бюджет {budget} €"
+        return f"Превышен бюджет Warmmiete ({price} € > {budget} €)"
 
     kalt_reason = kalt_only_budget_reason(
         budget, price, apartment.get("price_kind")
@@ -139,6 +162,10 @@ def hard_filter_reason(profile: dict[str, Any], apartment: dict[str, Any]) -> st
     if wg is not None:
         return wg
 
+    occupancy = single_occupancy_reason(profile, apartment)
+    if occupancy is not None:
+        return occupancy
+
     gender = gender_restriction_reason(profile, apartment)
     if gender is not None:
         return gender
@@ -158,25 +185,54 @@ def passes_hard_filters(profile: dict[str, Any], apartment: dict[str, Any]) -> b
 # --------------------------------------------------------------------------- #
 # Клавиатуры и карточка
 # --------------------------------------------------------------------------- #
-def listing_keyboard(lang: str, link: str) -> InlineKeyboardMarkup:
-    """Ссылка на объявление и переход к следующему подходящему."""
+def listing_keyboard(lang: str, apartment: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Ссылка, генерация письма и переход к следующему поиску."""
+    link = str(apartment.get("link") or "")
+    source = str(apartment.get("source") or "kleinanzeigen")
+    external_id = str(apartment.get("external_id") or "")
     builder = InlineKeyboardBuilder()
-    builder.button(text=t(lang, "btn_open"), url=link)
+    if link:
+        builder.button(text=t(lang, "btn_open"), url=link)
+    if source and external_id:
+        builder.button(
+            text=t(lang, "btn_gen_letter"),
+            callback_data=f"{CB_GEN_LETTER_PREFIX}{source}:{external_id}",
+        )
     builder.button(text=t(lang, "btn_skip_next"), callback_data=CB_SEARCH_NEXT)
     builder.adjust(1)
     return builder.as_markup()
 
 
-def listing_url_keyboard(lang: str, link: str) -> InlineKeyboardMarkup:
-    """Только ссылка на объявление — для пуша автопоиска и после «Искать дальше»."""
+def listing_url_keyboard(
+    lang: str, apartment: dict[str, Any] | str
+) -> InlineKeyboardMarkup:
+    """Ссылка (+ кнопка письма для автопоиска)."""
+    if isinstance(apartment, str):
+        link = apartment
+        source = ""
+        external_id = ""
+    else:
+        link = str(apartment.get("link") or "")
+        source = str(apartment.get("source") or "")
+        external_id = str(apartment.get("external_id") or "")
     builder = InlineKeyboardBuilder()
-    builder.button(text=t(lang, "btn_open_listing"), url=link)
+    if link:
+        builder.button(text=t(lang, "btn_open_listing"), url=link)
+    if source and external_id:
+        builder.button(
+            text=t(lang, "btn_gen_letter"),
+            callback_data=f"{CB_GEN_LETTER_PREFIX}{source}:{external_id}",
+        )
+    builder.adjust(1)
     return builder.as_markup()
 
 
 def link_only_keyboard(lang: str, link: str) -> InlineKeyboardMarkup:
     """Та же карточка после нажатия «Искать дальше»: остаётся только ссылка."""
-    return listing_url_keyboard(lang, link)
+    builder = InlineKeyboardBuilder()
+    if link:
+        builder.button(text=t(lang, "btn_open_listing"), url=link)
+    return builder.as_markup()
 
 
 def _source_label(lang: str, source: str) -> str:
@@ -189,7 +245,7 @@ def _source_label(lang: str, source: str) -> str:
 def render_listing_card(
     lang: str, apartment: dict[str, Any], verdict: dict[str, Any]
 ) -> str:
-    """Собирает карточку объявления с вердиктом AI и письмом."""
+    """Собирает карточку объявления с вердиктом AI (письмо — по кнопке)."""
     facts: list[str] = []
     price_line = format_price_line(lang, apartment)
     if price_line:
@@ -208,7 +264,7 @@ def render_listing_card(
     source = str(apartment.get("source") or "kleinanzeigen")
     source_label = _source_label(lang, source)
     title = _shorten(str(apartment.get("title") or ""), MAX_TITLE)
-    verdict_title = t(lang, "card_match_yes" if verdict["match"] else "card_match_no")
+    verdict_title = t(lang, "card_match_yes" if verdict.get("match") else "card_match_no")
 
     lines = [f"🏠 [{source_label}] <b>{html.quote(title)}</b>"]
     if facts:
@@ -227,8 +283,10 @@ def render_listing_card(
     if letter:
         lines.append("")
         lines.append(t(lang, "card_letter"))
-        # <code> позволяет скопировать письмо одним нажатием.
         lines.append(f"<code>{html.quote(letter)}</code>")
+    else:
+        lines.append("")
+        lines.append(t(lang, "card_letter_hint"))
 
     return "\n".join(lines)
 
@@ -315,12 +373,10 @@ async def _prepare_search_location(profile: dict[str, Any]) -> tuple[str, int]:
 
 
 async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
-    """Ищет первое подходящее объявление: карточки, фильтр по цифрам, AI.
+    """Ищет подходящие объявления: карточки, фильтр по цифрам, AI (без писем).
 
-    Не пишет в Telegram: вызывающий сам решает, показать карточку, пуш
-    или промолчать. Модель оценивает объявление один раз: совпадение
-    больше не показывается даже после смены анкеты, отказ можно
-    пересмотреть, если изменились бюджет или состав жильцов.
+    Не пишет в Telegram: вызывающий сам решает, показать карточки, пуш
+    или промолчать. Anschreiben генерируется отдельно по кнопке.
     """
     user_id = int(profile["user_id"])
     settings = get_settings()
@@ -383,6 +439,8 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
             await orchestrator.load_details(candidates)
         except Exception:
             logger.exception("Не удалось догрузить страницы объявлений")
+        # Письмо по кнопке читает listings из БД — сохраняем детали.
+        await upsert_listings(candidates)
         detailed, filtered_detailed, _ = await _collect_candidates(
             user_id,
             profile,
@@ -412,21 +470,18 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
     if not candidates:
         return FirstMatchResult(filtered=filtered)
 
-    if not await can_generate_letter(user_id):
-        logger.info(
-            "Пользователь %s: лимит Anschreiben бета-теста (%d/день)",
-            user_id,
-            BETA_AI_LETTERS_DAILY,
-        )
-        return FirstMatchResult(filtered=filtered, failure="beta_letters")
-
     if not settings.ai_budget_left(used):
         logger.info("Пользователь %s исчерпал дневной лимит AI", user_id)
         return FirstMatchResult(filtered=filtered, failure="limit")
 
     checked = 0
+    matches: list[MatchItem] = []
     for apartment in candidates[:MAX_AI_CHECKS]:
+        if len(matches) >= MAX_MATCHES_PER_CYCLE:
+            break
         if not settings.ai_budget_left(used):
+            if matches:
+                break
             return FirstMatchResult(checked=checked, filtered=filtered, failure="limit")
 
         # Списываем попытку до вызова: иначе сбой на стороне OpenAI позволял бы
@@ -435,8 +490,10 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
         used += 1
         checked += 1
 
-        verdict = await analyze_apartment_and_generate_letter(profile, apartment)
+        verdict = await analyze_apartment(profile, apartment)
         if verdict.get("error"):
+            if matches:
+                break
             return FirstMatchResult(
                 checked=checked,
                 filtered=filtered,
@@ -458,14 +515,20 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
             )
             continue
 
+        matches.append(MatchItem(apartment=apartment, verdict=verdict))
         logger.info(
-            "Пользователь %s: подходящее найдено после %d проверок",
+            "Пользователь %s: подходящее #%d после %d проверок",
             user_id,
+            len(matches),
             checked,
         )
+
+    if matches:
+        first = matches[0]
         return FirstMatchResult(
-            apartment=apartment,
-            verdict=verdict,
+            apartment=first.apartment,
+            verdict=first.verdict,
+            matches=matches,
             checked=checked,
             filtered=filtered,
         )
@@ -475,12 +538,7 @@ async def find_first_match(profile: dict[str, Any]) -> FirstMatchResult:
 
 
 async def run_search(user: User, send: Sender, state: FSMContext) -> None:
-    """Ищет первое подходящее объявление и показывает его карточку.
-
-    Перебор идёт до первого совпадения. Неподходящие объявления пользователю
-    не показываются вовсе, но помечаются просмотренными, чтобы не платить за
-    их повторную оценку.
-    """
+    """Ищет подходящие объявления и сразу шлёт карточки без Anschreiben."""
     profile = await get_user(user.id)
     if profile is None or not profile.get("city"):
         await send(t(DEFAULT_LANG, "no_profile"))
@@ -501,12 +559,6 @@ async def run_search(user: User, send: Sender, state: FSMContext) -> None:
     if result.failure == "limit":
         await send(t(lang, "ai_limit_reached", limit=get_settings().ai_daily_limit))
         return
-    if result.failure == "beta_letters":
-        await send(
-            t(lang, "beta_letter_limit", limit=BETA_AI_LETTERS_DAILY),
-            reply_markup=profile_reply_keyboard(lang),
-        )
-        return
     if result.failure == "scraper":
         await send(
             t(lang, "search_failed", error=html.quote(result.failure_detail or ""))
@@ -521,12 +573,16 @@ async def run_search(user: User, send: Sender, state: FSMContext) -> None:
         await send(t(lang, "search_no_match", checked=0))
         return
 
-    if result.apartment is not None and result.verdict is not None:
-        await send(
-            render_listing_card(lang, result.apartment, result.verdict),
-            reply_markup=listing_keyboard(lang, str(result.apartment["link"])),
-            disable_web_page_preview=True,
-        )
+    matches = result.all_matches()
+    if matches:
+        if len(matches) > 1:
+            await send(t(lang, "search_matches_found", count=len(matches)))
+        for item in matches:
+            await send(
+                render_listing_card(lang, item.apartment, item.verdict),
+                reply_markup=listing_keyboard(lang, item.apartment),
+                disable_web_page_preview=True,
+            )
         return
 
     if result.checked == 0 and result.filtered == 0:

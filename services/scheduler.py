@@ -13,7 +13,6 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from config import get_settings
 from database import get_auto_search_users, toggle_auto_search
-from services.user_limits import BETA_AI_LETTERS_DAILY
 from texts import DEFAULT_LANG, t
 
 logger = logging.getLogger(__name__)
@@ -52,8 +51,7 @@ async def _notify_match(
     apartment: dict[str, Any],
     verdict: dict[str, Any],
 ) -> None:
-    """Пуш с карточкой и Anschreiben. Если пользователь заблокировал бота — выключаем автопоиск."""
-    # Импорт здесь, чтобы пакет services не тянул хэндлеры при загрузке ai_agent.
+    """Пуш с карточкой без письма — Anschreiben по кнопке. Блок бота → выкл. автопоиск."""
     from handlers.search import listing_url_keyboard, render_listing_card
 
     user_id = int(profile["user_id"])
@@ -64,7 +62,7 @@ async def _notify_match(
         await bot.send_message(
             chat_id=user_id,
             text=text,
-            reply_markup=listing_url_keyboard(lang, str(apartment["link"])),
+            reply_markup=listing_url_keyboard(lang, apartment),
             disable_web_page_preview=True,
         )
     except TelegramForbiddenError:
@@ -79,7 +77,7 @@ async def _notify_match(
 
 
 async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
-    """Один пользователь: лимит AI, все провайдеры, фильтр, первое совпадение — пуш."""
+    """Один пользователь: лимит AI, все провайдеры, фильтр, совпадения — пуш."""
     from handlers.search import find_first_match
 
     user_id = int(profile["user_id"])
@@ -90,13 +88,6 @@ async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
     result = await find_first_match(profile)
     if result.failure == "limit":
         logger.info("Автопоиск: пользователь %s исчерпал лимит AI", user_id)
-        return
-    if result.failure == "beta_letters":
-        logger.info(
-            "Автопоиск: пользователь %s — лимит Anschreiben бета (%d/день), поиск без AI",
-            user_id,
-            BETA_AI_LETTERS_DAILY,
-        )
         return
     if result.failure == "empty":
         logger.info(
@@ -112,7 +103,9 @@ async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
             result.failure_detail or "",
         )
         return
-    if result.apartment is None or result.verdict is None:
+
+    matches = result.all_matches()
+    if not matches:
         logger.info(
             "Автопоиск: пользователь %s без совпадений (проверено %d)",
             user_id,
@@ -120,19 +113,17 @@ async def _search_one_user(bot: Bot, profile: dict[str, Any]) -> None:
         )
         return
 
-    await _notify_match(bot, profile, result.apartment, result.verdict)
+    for item in matches:
+        await _notify_match(bot, profile, item.apartment, item.verdict)
 
 
 async def run_background_search(bot: Bot) -> None:
     """Обходит пользователей с включённым автопоиском и шлёт пуш при совпадении.
 
     Для каждого пользователя — тот же конвейер, что и у ручного поиска
-    (оркестратор провайдеров + фильтр + load_details + AI): на первом
-    `match` рассылка этому пользователю останавливается до следующего тика.
+    (оркестратор провайдеров + фильтр + load_details + AI без писем).
 
-    Несколько пользователей идут параллельно (asyncio + Semaphore), а не
-    строго по очереди: при 10 пользователях и concurrency=3 цикл занимает
-    примерно втрое меньше времени, чем последовательный обход.
+    Несколько пользователей идут параллельно (asyncio + Semaphore).
     """
     users = await get_auto_search_users()
     concurrency = max(1, int(get_settings().auto_search_concurrency))

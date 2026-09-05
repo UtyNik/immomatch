@@ -185,7 +185,18 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "❄️ <b>Ціна:</b> {kalt} € Kaltmiete + {nk} € NK"
         ),
         "card_letter": "✉️ <b>Супровідний лист (Anschreiben)</b>",
+        "card_letter_hint": (
+            "✉️ Натисніть «Згенерувати лист», щоб AI написав Anschreiben "
+            "саме для цього оголошення."
+        ),
         "btn_open": "🔗 Перейти",
+        "btn_gen_letter": "✉️ Згенерувати лист",
+        "search_matches_found": "✅ Знайдено підходящих: <b>{count}</b>",
+        "letter_generating": "⏳ Генерую лист…",
+        "letter_copy_hint": "💡 Натисніть на текст листа, щоб скопіювати.",
+        "letter_failed": "⚠️ Не вдалося згенерувати лист: <i>{error}</i>",
+        "letter_listing_missing": "Оголошення більше недоступне. Запустіть пошук знову.",
+        "letter_bad_payload": "Некоректна кнопка. Запустіть пошук знову.",
         "ai_limit_reached": (
             "🚫 На сьогодні вичерпано ліміт AI-оцінок (<b>{limit}</b>). "
             "Спробуйте завтра."
@@ -199,6 +210,20 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "ℹ️ Досягнуто денний ліміт AI-листів для бета-тесту "
             "(<b>{limit}/{limit}</b>). Пошук продовжується, але листи поки не генеруються."
         ),
+        "beta_letter_limit_toast": "Ліміт листів на сьогодні: {limit}/{limit}",
+        "ask_letter_template": (
+            "📝 <b>Мій шаблон листа</b>\n\n"
+            "Опишіть себе для Anschreiben: робота, дохід, тварини, "
+            "чому шукаєте житло. Текст можна німецькою або рідною мовою — "
+            "AI адаптує його під оголошення.\n\n"
+            "Надішліть текст або очистіть / пропустіть."
+        ),
+        "btn_edit_template": "📝 Шаблон листа",
+        "btn_template_clear": "🗑 Очистити шаблон",
+        "f_letter_template": "Шаблон листа",
+        "settings_title": "⚙️ Налаштування",
+        "template_saved": "✅ Шаблон листа збережено.",
+        "template_cleared": "✅ Шаблон листа очищено.",
         "feedback_usage": (
             "💬 Надішліть відгук так:\n<code>/feedback ваш текст</code>"
         ),
@@ -413,7 +438,18 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "❄️ <b>Цена:</b> {kalt} € Kaltmiete + {nk} € NK"
         ),
         "card_letter": "✉️ <b>Сопроводительное письмо (Anschreiben)</b>",
+        "card_letter_hint": (
+            "✉️ Нажмите «Сгенерировать письмо», чтобы AI написал Anschreiben "
+            "именно для этого объявления."
+        ),
         "btn_open": "🔗 Перейти",
+        "btn_gen_letter": "✉️ Сгенерировать письмо",
+        "search_matches_found": "✅ Найдено подходящих: <b>{count}</b>",
+        "letter_generating": "⏳ Генерирую письмо…",
+        "letter_copy_hint": "💡 Нажмите на текст письма, чтобы скопировать.",
+        "letter_failed": "⚠️ Не удалось сгенерировать письмо: <i>{error}</i>",
+        "letter_listing_missing": "Объявление больше недоступно. Запустите поиск снова.",
+        "letter_bad_payload": "Некорректная кнопка. Запустите поиск снова.",
         "ai_limit_reached": (
             "🚫 На сегодня лимит AI-оценок исчерпан (<b>{limit}</b>). "
             "Попробуйте завтра."
@@ -427,6 +463,20 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "ℹ️ Достигнут дневной лимит AI-писем для бета-теста "
             "(<b>{limit}/{limit}</b>). Поиск продолжается, но письма пока не генерируются."
         ),
+        "beta_letter_limit_toast": "Лимит писем на сегодня: {limit}/{limit}",
+        "ask_letter_template": (
+            "📝 <b>Мой шаблон письма</b>\n\n"
+            "Опишите себя для Anschreiben: работа, доход, животные, "
+            "почему ищете жильё. Текст можно на немецком или родном языке — "
+            "AI адаптирует его под объявление.\n\n"
+            "Отправьте текст или очистите / пропустите."
+        ),
+        "btn_edit_template": "📝 Шаблон письма",
+        "btn_template_clear": "🗑 Очистить шаблон",
+        "f_letter_template": "Шаблон письма",
+        "settings_title": "⚙️ Настройки",
+        "template_saved": "✅ Шаблон письма сохранён.",
+        "template_cleared": "✅ Шаблон письма очищен.",
         "feedback_usage": (
             "💬 Отправьте отзыв так:\n<code>/feedback ваш текст</code>"
         ),
@@ -638,7 +688,18 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "❄️ <b>Price:</b> {kalt} € Kaltmiete + {nk} € NK"
         ),
         "card_letter": "✉️ <b>Cover letter (Anschreiben)</b>",
+        "card_letter_hint": (
+            "✉️ Tap “Generate letter” so the AI writes an Anschreiben "
+            "for this listing only."
+        ),
         "btn_open": "🔗 Open",
+        "btn_gen_letter": "✉️ Generate letter",
+        "search_matches_found": "✅ Matches found: <b>{count}</b>",
+        "letter_generating": "⏳ Generating letter…",
+        "letter_copy_hint": "💡 Tap the letter text to copy it.",
+        "letter_failed": "⚠️ Could not generate the letter: <i>{error}</i>",
+        "letter_listing_missing": "Listing is no longer available. Run search again.",
+        "letter_bad_payload": "Invalid button. Run search again.",
         "ai_limit_reached": (
             "🚫 Daily limit of AI reviews reached (<b>{limit}</b>). "
             "Please try again tomorrow."
@@ -652,6 +713,20 @@ TEXTS: Final[dict[str, dict[str, str]]] = {
             "ℹ️ Daily beta limit for AI letters reached "
             "(<b>{limit}/{limit}</b>). Search continues, but letters are paused for now."
         ),
+        "beta_letter_limit_toast": "Letter limit for today: {limit}/{limit}",
+        "ask_letter_template": (
+            "📝 <b>My letter template</b>\n\n"
+            "Describe yourself for Anschreiben: job, income, pets, "
+            "why you are looking. German or your language is fine — "
+            "the AI will adapt it to each listing.\n\n"
+            "Send text, or clear / skip."
+        ),
+        "btn_edit_template": "📝 Letter template",
+        "btn_template_clear": "🗑 Clear template",
+        "f_letter_template": "Letter template",
+        "settings_title": "⚙️ Settings",
+        "template_saved": "✅ Letter template saved.",
+        "template_cleared": "✅ Letter template cleared.",
         "feedback_usage": (
             "💬 Send feedback like this:\n<code>/feedback your message</code>"
         ),

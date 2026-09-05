@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     auto_search_concurrency: int = 3
     # Telegram user id администратора для алертов парсеров (опционально).
     admin_telegram_id: int | None = None
+    # Включать ли площадку WG-Gesucht (частые CAPTCHA). False — только KA + Immowelt.
+    enable_wg_gesucht: bool = True
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

@@ -7,7 +7,7 @@ from typing import Any, Final
 
 from aiogram import Bot, F, Router, html
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, User
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -22,7 +22,15 @@ from database import (
 from handlers.common import Sender, drop_keyboard, sender
 from handlers.feedback import CB_FEEDBACK_HINT
 from handlers.start import beta_intro_text
-from keyboards import CB_AUTO_SEARCH, CB_SEARCH, PROFILE_BUTTON_TEXTS, profile_reply_keyboard
+from keyboards import (
+    CB_AUTO_SEARCH,
+    CB_SEARCH,
+    CB_TEMPLATE_CLEAR,
+    CB_TEMPLATE_EDIT,
+    CB_TEMPLATE_SKIP,
+    PROFILE_BUTTON_TEXTS,
+    profile_reply_keyboard,
+)
 from services.geo import resolve_city_in_germany
 from services.translator import normalize_and_translate_user_input
 from services.user_limits import can_enable_auto_search
@@ -103,6 +111,7 @@ EDITABLE_FIELDS: Final[tuple[str, ...]] = (
     "pets",
     "income",
     "notes",
+    "template",
 )
 # Смена этих полей меняет выдачу Kleinanzeigen / отсев — нужен новый
 # глубокий обход (до 2 страниц) и сброс seen.
@@ -219,6 +228,15 @@ def edit_field_keyboard(lang: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def template_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Очистить или пропустить правку шаблона письма."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=t(lang, "btn_template_clear"), callback_data=CB_TEMPLATE_CLEAR)
+    builder.button(text=t(lang, "btn_skip"), callback_data=CB_TEMPLATE_SKIP)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def profile_keyboard(
     lang: str, profile: dict[str, Any] | None = None
 ) -> InlineKeyboardMarkup:
@@ -231,6 +249,7 @@ def profile_keyboard(
     builder = InlineKeyboardBuilder()
     builder.button(text=t(lang, "btn_search"), callback_data=CB_SEARCH)
     builder.button(text=t(lang, auto_key), callback_data=CB_AUTO_SEARCH)
+    builder.button(text=t(lang, "btn_edit_template"), callback_data=CB_TEMPLATE_EDIT)
     builder.button(text=t(lang, "btn_change_lang"), callback_data=CB_LANG_MENU)
     builder.button(text=t(lang, "btn_edit_profile"), callback_data=CB_EDIT_MENU)
     builder.button(text=t(lang, "btn_feedback"), callback_data=CB_FEEDBACK_HINT)
@@ -288,6 +307,7 @@ def render_profile(lang: str, profile: dict[str, Any]) -> str:
 
     city = profile.get("city_de") or profile.get("city")
     notes = profile.get("custom_notes")
+    template = profile.get("custom_template")
     rooms = _format_rooms(profile.get("rooms_min"))
     household = profile.get("household_size")
     first = str(profile.get("first_name") or "").strip()
@@ -346,6 +366,12 @@ def render_profile(lang: str, profile: dict[str, Any]) -> str:
         f"💰 <b>{t(lang, 'f_income')}:</b> {_format_income(lang, profile.get('net_income'))}",
         f"📝 <b>{t(lang, 'f_notes')}:</b> "
         + (f"<i>{html.quote(notes)}</i>" if notes else empty),
+        f"✉️ <b>{t(lang, 'f_letter_template')}:</b> "
+        + (
+            f"<i>{html.quote(str(template)[:200])}{'…' if len(str(template)) > 200 else ''}</i>"
+            if template
+            else empty
+        ),
     ]
     return "\n".join(lines)
 
@@ -822,6 +848,7 @@ async def _finish_onboarding(state: FSMContext, user: User, send: Sender) -> Non
         "has_pets": data.get("has_pets"),
         "net_income": data.get("net_income"),
         "custom_notes": data.get("custom_notes"),
+        "custom_template": data.get("custom_template"),
         "bundesland": data.get("bundesland"),
         "federated_state_id": data.get("federated_state_id"),
         "restrict_to_bundesland": data.get("restrict_to_bundesland"),
@@ -973,6 +1000,101 @@ async def _begin_field_edit(
         await state.set_state(OnboardingStates.custom_notes)
         await state.update_data(language=lang, notes_only=True)
         await send(t(lang, "ask_notes"), reply_markup=skip_keyboard(lang))
+        return
+    if field == "template":
+        await _ask_letter_template(send, state, lang)
+
+
+async def _ask_letter_template(send: Sender, state: FSMContext, lang: str) -> None:
+    """Запрос персонального шаблона Anschreiben."""
+    await state.set_state(OnboardingStates.custom_template)
+    await state.update_data(language=lang, template_only=True)
+    await send(t(lang, "ask_letter_template"), reply_markup=template_keyboard(lang))
+
+
+@router.message(Command("settings"))
+async def cmd_settings(message: Message, state: FSMContext) -> None:
+    """Команда /settings — правка шаблона письма."""
+    if message.from_user is None:
+        return
+    profile = await get_user(message.from_user.id)
+    lang = str((profile or {}).get("language") or DEFAULT_LANG)
+    if profile is None or not profile.get("city"):
+        await message.answer(t(lang, "no_profile"))
+        return
+    await message.answer(t(lang, "settings_title"))
+    await _ask_letter_template(message.answer, state, lang)
+
+
+@router.callback_query(F.data == CB_TEMPLATE_EDIT)
+async def open_letter_template(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    """Кнопка «Мой шаблон письма» под анкетой."""
+    profile = await get_user(callback.from_user.id)
+    lang = str((profile or {}).get("language") or DEFAULT_LANG)
+    if profile is None or not profile.get("city"):
+        await callback.answer(t(lang, "no_profile"), show_alert=True)
+        return
+    await _ask_letter_template(sender(callback, bot), state, lang)
+    await callback.answer()
+
+
+@router.message(OnboardingStates.custom_template, F.text)
+async def process_letter_template(message: Message, state: FSMContext) -> None:
+    """Сохраняет персональный шаблон Anschreiben."""
+    lang = await _lang_of(state)
+    text = (message.text or "").strip()
+    if len(text) > NOTES_MAX_LEN:
+        await message.answer(t(lang, "err_notes_long", max=NOTES_MAX_LEN))
+        return
+    if message.from_user is None:
+        return
+    await _patch_profile(
+        message.from_user,
+        lang,
+        state,
+        message.answer,
+        {"custom_template": text or None},
+    )
+
+
+@router.callback_query(
+    OnboardingStates.custom_template, F.data == CB_TEMPLATE_CLEAR
+)
+async def clear_letter_template(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    """Очищает шаблон письма."""
+    lang = await _lang_of(state)
+    await drop_keyboard(callback)
+    await _patch_profile(
+        callback.from_user,
+        lang,
+        state,
+        sender(callback, bot),
+        {"custom_template": None},
+    )
+    await callback.answer(t(lang, "template_cleared"))
+
+
+@router.callback_query(
+    OnboardingStates.custom_template, F.data == CB_TEMPLATE_SKIP
+)
+async def skip_letter_template(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    """Отмена правки шаблона — возвращает к карточке анкеты."""
+    lang = await _lang_of(state)
+    await drop_keyboard(callback)
+    await state.clear()
+    profile = await get_user(callback.from_user.id)
+    if profile and profile.get("city"):
+        await sender(callback, bot)(
+            render_profile(lang, profile),
+            reply_markup=profile_keyboard(lang, profile),
+        )
+    await callback.answer()
 
 
 # --------------------------------------------------------------------------- #
@@ -1824,6 +1946,7 @@ async def skip_notes(callback: CallbackQuery, state: FSMContext, bot: Bot) -> No
         OnboardingStates.household,
         OnboardingStates.income,
         OnboardingStates.custom_notes,
+        OnboardingStates.custom_template,
     )
 )
 async def expect_text(message: Message, state: FSMContext) -> None:

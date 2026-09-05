@@ -11,6 +11,10 @@ from texts import LANGUAGES, t
 CB_SEARCH: Final[str] = "start_search"
 CB_SEARCH_NEXT: Final[str] = "search_next"
 CB_AUTO_SEARCH: Final[str] = "auto_search_toggle"
+CB_GEN_LETTER_PREFIX: Final[str] = "gen_letter:"
+CB_TEMPLATE_EDIT: Final[str] = "template:edit"
+CB_TEMPLATE_CLEAR: Final[str] = "template:clear"
+CB_TEMPLATE_SKIP: Final[str] = "template:skip"
 
 # Постоянная клавиатура присылает обычный текст, поэтому хэндлер узнаёт нажатие
 # по подписи. Язык интерфейса пользователя тут неизвестен — держим все варианты.

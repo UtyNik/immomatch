@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS users (
     bundesland             TEXT,
     federated_state_id     TEXT,
     restrict_to_bundesland INTEGER,
+    custom_template        TEXT,
     is_active              INTEGER   NOT NULL DEFAULT 1,
     is_auto_search_enabled INTEGER   NOT NULL DEFAULT 1,
     deep_search_done       INTEGER   NOT NULL DEFAULT 0,
@@ -73,6 +74,7 @@ _USERS_ADDED_COLUMNS: Final[dict[str, str]] = {
     "bundesland": "TEXT",
     "federated_state_id": "TEXT",
     "restrict_to_bundesland": "INTEGER",
+    "custom_template": "TEXT",
 }
 
 # Составной первичный ключ сам защищает от дублей: повторная отметка того же
@@ -94,6 +96,7 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     user_id INTEGER NOT NULL,
     day     TEXT    NOT NULL,
     calls   INTEGER NOT NULL DEFAULT 0,
+    letters INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day)
 )
 """
@@ -123,13 +126,14 @@ INSERT INTO users (
     search_radius, budget_max, rooms_min, sqm_min, sqm_max, household_size,
     household_type, applicant_gender, has_wbs, uses_jobcenter, is_employed,
     has_pets, net_income, custom_notes, bundesland, federated_state_id,
-    restrict_to_bundesland, is_active
+    restrict_to_bundesland, custom_template, is_active
 ) VALUES (
     :user_id, :username, :language, :city, :city_de, :first_name, :last_name,
     :search_radius, :budget_max, :rooms_min, :sqm_min, :sqm_max,
     :household_size, :household_type, :applicant_gender, :has_wbs,
     :uses_jobcenter, :is_employed, :has_pets, :net_income, :custom_notes,
-    :bundesland, :federated_state_id, :restrict_to_bundesland, :is_active
+    :bundesland, :federated_state_id, :restrict_to_bundesland,
+    :custom_template, :is_active
 )
 ON CONFLICT(user_id) DO UPDATE SET
     username           = excluded.username,
@@ -155,6 +159,7 @@ ON CONFLICT(user_id) DO UPDATE SET
     bundesland         = excluded.bundesland,
     federated_state_id = excluded.federated_state_id,
     restrict_to_bundesland = excluded.restrict_to_bundesland,
+    custom_template    = excluded.custom_template,
     is_active          = excluded.is_active
 """
 
@@ -230,6 +235,18 @@ async def _migrate_seen_storage_ids(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _add_missing_ai_usage_columns(db: aiosqlite.Connection) -> None:
+    """Досоздаёт letters в ai_usage для лимита Anschreiben."""
+    async with db.execute("PRAGMA table_info(ai_usage)") as cursor:
+        existing = {row["name"] for row in await cursor.fetchall()}
+    if "letters" in existing:
+        return
+    await db.execute(
+        "ALTER TABLE ai_usage ADD COLUMN letters INTEGER NOT NULL DEFAULT 0"
+    )
+    logger.info("Таблица ai_usage дополнена колонкой letters")
+
+
 async def init_db() -> None:
     """Создаёт схему БД, если её ещё нет. Вызывается один раз при старте."""
     async with _connect() as db:
@@ -239,6 +256,7 @@ async def init_db() -> None:
         await db.execute(_CREATE_LISTINGS_TABLE)
         await _add_missing_columns(db)
         await _add_missing_seen_columns(db)
+        await _add_missing_ai_usage_columns(db)
         await _migrate_seen_storage_ids(db)
         # Кто уже искал жильё, тот не получает повторный обход на 2 страницы.
         await db.execute(
@@ -300,6 +318,9 @@ async def save_user_profile(user_data: dict[str, Any]) -> None:
         if user_data.get("federated_state_id")
         else None,
         "restrict_to_bundesland": _to_int_flag(user_data.get("restrict_to_bundesland")),
+        "custom_template": (str(user_data["custom_template"]).strip() or None)
+        if user_data.get("custom_template")
+        else None,
         "is_active": _to_int_flag(user_data.get("is_active", True)) or 0,
     }
 
@@ -536,19 +557,17 @@ async def count_ai_calls_today(user_id: int) -> int:
 
 
 async def count_anschreiben_today(user_id: int) -> int:
-    """Anschreiben, отправленные пользователю сегодня (UTC)."""
+    """Anschreiben, сгенерированные пользователю сегодня (UTC)."""
     day = _utc_day()
     async with _connect() as db:
         async with db.execute(
-            """
-            SELECT COUNT(*) AS cnt FROM seen_apartments
-            WHERE user_id = ? AND was_match = 1
-              AND strftime('%Y-%m-%d', created_at) = ?
-            """,
+            "SELECT letters FROM ai_usage WHERE user_id = ? AND day = ?",
             (user_id, day),
         ) as cursor:
             row = await cursor.fetchone()
-    return int(row["cnt"]) if row else 0
+    if row is not None and row["letters"] is not None:
+        return int(row["letters"])
+    return 0
 
 
 async def count_users_total() -> int:
@@ -582,7 +601,7 @@ async def count_listings_total() -> int:
 async def count_anschreiben_total() -> int:
     async with _connect() as db:
         async with db.execute(
-            "SELECT COUNT(*) AS cnt FROM seen_apartments WHERE was_match = 1"
+            "SELECT COALESCE(SUM(letters), 0) AS cnt FROM ai_usage"
         ) as cursor:
             row = await cursor.fetchone()
     return int(row["cnt"]) if row else 0
@@ -592,10 +611,7 @@ async def count_anschreiben_today_all() -> int:
     day = _utc_day()
     async with _connect() as db:
         async with db.execute(
-            """
-            SELECT COUNT(*) AS cnt FROM seen_apartments
-            WHERE was_match = 1 AND strftime('%Y-%m-%d', created_at) = ?
-            """,
+            "SELECT COALESCE(SUM(letters), 0) AS cnt FROM ai_usage WHERE day = ?",
             (day,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -608,7 +624,7 @@ async def register_ai_call(user_id: int) -> int:
     async with _connect() as db:
         await db.execute(
             """
-            INSERT INTO ai_usage (user_id, day, calls) VALUES (?, ?, 1)
+            INSERT INTO ai_usage (user_id, day, calls, letters) VALUES (?, ?, 1, 0)
             ON CONFLICT(user_id, day) DO UPDATE SET calls = calls + 1
             """,
             (user_id, day),
@@ -619,6 +635,70 @@ async def register_ai_call(user_id: int) -> int:
         ) as cursor:
             row = await cursor.fetchone()
     return int(row["calls"]) if row else 0
+
+
+async def register_letter_call(user_id: int) -> int:
+    """Увеличивает счётчик Anschreiben за сегодня и возвращает новое значение."""
+    day = _utc_day()
+    async with _connect() as db:
+        await db.execute(
+            """
+            INSERT INTO ai_usage (user_id, day, calls, letters) VALUES (?, ?, 0, 1)
+            ON CONFLICT(user_id, day) DO UPDATE SET letters = letters + 1
+            """,
+            (user_id, day),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT letters FROM ai_usage WHERE user_id = ? AND day = ?",
+            (user_id, day),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return int(row["letters"]) if row else 0
+
+
+async def get_listing(source: str, external_id: str) -> dict[str, Any] | None:
+    """Объявление из таблицы listings в legacy-формате для карточки/письма."""
+    async with _connect() as db:
+        async with db.execute(
+            """
+            SELECT source, external_id, url, title, price, size_sqm, rooms,
+                   location, image_url, description, raw_data
+            FROM listings
+            WHERE source = ? AND external_id = ?
+            """,
+            (source, external_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+    if row is None:
+        return None
+    raw = {}
+    if row["raw_data"]:
+        try:
+            parsed = json.loads(row["raw_data"])
+            if isinstance(parsed, dict):
+                raw = parsed
+        except json.JSONDecodeError:
+            raw = {}
+    return {
+        "external_id": row["external_id"],
+        "source": row["source"],
+        "storage_id": f"{row['source']}:{row['external_id']}",
+        "title": row["title"] or "",
+        "price": row["price"],
+        "sqm": row["size_sqm"],
+        "rooms": row["rooms"],
+        "address": row["location"] or "",
+        "link": row["url"],
+        "image_url": row["image_url"],
+        "description": row["description"] or "",
+        "price_kind": raw.get("price_kind") or "unknown",
+        "landlord_contact": raw.get("landlord_contact"),
+        "rent_breakdown": raw.get("rent_breakdown"),
+        "distance_km": raw.get("distance_km"),
+        "raw_data": raw,
+        "published_at": raw.get("published_at"),
+    }
 
 
 def _to_int_flag(value: Any) -> int | None:

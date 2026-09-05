@@ -7,6 +7,7 @@ import logging
 from typing import Any, Final
 
 from scrapers import ScraperError
+from config import get_settings
 from services.parsers.base import (
     BaseProvider,
     ListingData,
@@ -22,15 +23,23 @@ logger = logging.getLogger(__name__)
 _PROVIDER_TIMEOUT: Final[float] = 90.0
 
 
+def _default_providers() -> list[BaseProvider]:
+    providers: list[BaseProvider] = [
+        KleinanzeigenProvider(),
+        ImmoweltProvider(),
+    ]
+    if get_settings().enable_wg_gesucht:
+        providers.append(WGGesuchtProvider())
+    else:
+        logger.info("WG-Gesucht отключён (ENABLE_WG_GESUCHT=false)")
+    return providers
+
+
 class SearchOrchestrator:
     """Запрашивает объявления у всех активных провайдеров и объединяет результат."""
 
     def __init__(self, providers: list[BaseProvider] | None = None) -> None:
-        self.providers = providers or [
-            KleinanzeigenProvider(),
-            ImmoweltProvider(),
-            WGGesuchtProvider(),
-        ]
+        self.providers = providers or _default_providers()
         self._by_name = {provider.name: provider for provider in self.providers}
 
     async def fetch_all(

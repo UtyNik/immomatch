@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
@@ -21,13 +21,28 @@ _META_PUBLISHED = re.compile(
     re.IGNORECASE,
 )
 _ABSOLUTE_DE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(\d{2,4})\b")
+_HEUTE_TIME = re.compile(
+    r"(?i)\bheute\b(?:\s*(?:um|,)?\s*(\d{1,2})[:.](\d{2}))?"
+)
+_GESTERN_TIME = re.compile(
+    r"(?i)\bgestern\b(?:\s*(?:um|,)?\s*(\d{1,2})[:.](\d{2}))?"
+)
 _RELATIVE = re.compile(
-    r"(?i)\b(heute|gestern|vor\s+(\d+)\s+(minute[n]?|min\.?|stunde[n]?|std\.?|tag(?:en)?|woche[n]?))\b"
+    r"(?i)\bvor\s+(\d+)\s+(minute[n]?|min\.?|stunde[n]?|std\.?|tag(?:en)?|woche[n]?)\b"
 )
 
 
+def _berlin_now(now: datetime | None = None) -> datetime:
+    """Текущий момент в Europe/Berlin (aware)."""
+    if now is None:
+        return datetime.now(_BERLIN)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=_BERLIN)
+    return now.astimezone(_BERLIN)
+
+
 def parse_iso_timestamp(value: str | None) -> datetime | None:
-    """Разбирает ISO-8601 из JSON/HTML Immowelt/Kleinanzeigen."""
+    """Разбирает ISO-8601; naive трактуем как Europe/Berlin."""
     if not value or not str(value).strip():
         return None
     raw = str(value).strip()
@@ -39,7 +54,7 @@ def parse_iso_timestamp(value: str | None) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=_BERLIN)
-    return parsed
+    return parsed.astimezone(_BERLIN)
 
 
 def parse_iso_from_html(html: str) -> datetime | None:
@@ -60,13 +75,14 @@ def parse_german_listing_date(
     *,
     now: datetime | None = None,
 ) -> datetime | None:
-    """Парсит «Heute», «vor 2 Stunden», «12.03.2026» из текста карточки."""
+    """Парсит «Heute», «heute um 14:00», «vor 2 Stunden», «12.03.2026».
+
+    Все относительные метки считаются от Europe/Berlin.
+    """
     if not text or not text.strip():
         return None
 
-    reference = now or datetime.now(_BERLIN)
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=_BERLIN)
+    reference = _berlin_now(now)
 
     absolute = _ABSOLUTE_DE.search(text)
     if absolute:
@@ -79,28 +95,41 @@ def parse_german_listing_date(
         except ValueError:
             pass
 
-    match = _RELATIVE.search(text)
-    if not match:
+    relative = _RELATIVE.search(text)
+    if relative:
+        amount = int(relative.group(1))
+        unit = relative.group(2).casefold()
+        if unit.startswith("min"):
+            return reference - timedelta(minutes=amount)
+        if unit.startswith("st") or unit.startswith("std"):
+            return reference - timedelta(hours=amount)
+        if unit.startswith("tag"):
+            return reference - timedelta(days=amount)
+        if unit.startswith("woch"):
+            return reference - timedelta(weeks=amount)
         return None
 
-    token = match.group(1).casefold()
-    if token == "heute":
-        start = reference.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start
-    if token == "gestern":
-        start = reference.replace(hour=0, minute=0, second=0, microsecond=0)
-        return start - timedelta(days=1)
+    heute = _HEUTE_TIME.search(text)
+    if heute:
+        hour = int(heute.group(1)) if heute.group(1) else 12
+        minute = int(heute.group(2)) if heute.group(2) else 0
+        try:
+            return reference.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            )
+        except ValueError:
+            return reference.replace(hour=12, minute=0, second=0, microsecond=0)
 
-    amount = int(match.group(2))
-    unit = match.group(3).casefold()
-    if unit.startswith("min"):
-        return reference - timedelta(minutes=amount)
-    if unit.startswith("st") or unit.startswith("std"):
-        return reference - timedelta(hours=amount)
-    if unit.startswith("tag"):
-        return reference - timedelta(days=amount)
-    if unit.startswith("woch"):
-        return reference - timedelta(weeks=amount)
+    gestern = _GESTERN_TIME.search(text)
+    if gestern:
+        hour = int(gestern.group(1)) if gestern.group(1) else 12
+        minute = int(gestern.group(2)) if gestern.group(2) else 0
+        day = reference - timedelta(days=1)
+        try:
+            return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except ValueError:
+            return day.replace(hour=12, minute=0, second=0, microsecond=0)
+
     return None
 
 
@@ -130,7 +159,10 @@ def format_published_ago(
     *,
     now: datetime | None = None,
 ) -> str | None:
-    """«Опубликовано 2 часа назад» / «Published 2 hours ago»."""
+    """«⏱ Опубликовано: 2 часа назад» относительно Europe/Berlin.
+
+    Если дату разобрать нельзя — None (строку в карточке не показываем).
+    """
     if published_at is None:
         return None
     if isinstance(published_at, str):
@@ -141,19 +173,23 @@ def format_published_ago(
             return None
         published_at = parsed
 
-    reference = now or datetime.now(UTC)
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=UTC)
-    moment = published_at.astimezone(UTC)
+    reference = _berlin_now(now)
+    moment = (
+        published_at
+        if published_at.tzinfo is not None
+        else published_at.replace(tzinfo=_BERLIN)
+    ).astimezone(_BERLIN)
     delta = reference - moment
-    if delta.total_seconds() < 0:
+    if delta.total_seconds() < -120:
+        # Больше 2 минут в будущем — явный рассинхрон, не показываем.
         return None
+    if delta.total_seconds() < 0:
+        delta = timedelta(0)
 
     seconds = int(delta.total_seconds())
     if seconds < 45:
         just_now = {"ua": "щойно", "ru": "только что", "en": "just now"}
-        prefix = {"ua": "Опубліковано", "ru": "Опубликовано", "en": "Published"}
-        return f"📅 {prefix.get(lang, prefix['ru'])} {just_now.get(lang, just_now['ru'])}"
+        return f"⏱ {_prefix(lang)}: {just_now.get(lang, just_now['ru'])}"
 
     minutes = max(1, seconds // 60)
     if minutes < 60:
@@ -171,38 +207,43 @@ def format_published_ago(
     if weeks < 5:
         return _format_unit(lang, weeks, "week")
 
-    local = moment.astimezone(_BERLIN)
-    date_str = local.strftime("%d.%m.%Y")
-    prefix = {"ua": "Опубліковано", "ru": "Опубликовано", "en": "Published"}
-    return f"📅 {prefix.get(lang, prefix['ru'])} {date_str}"
+    date_str = moment.strftime("%d.%m.%Y")
+    return f"⏱ {_prefix(lang)}: {date_str}"
+
+
+def _prefix(lang: str) -> str:
+    return {
+        "ua": "Опубліковано",
+        "ru": "Опубликовано",
+        "en": "Published",
+    }.get(lang, "Опубликовано")
 
 
 def _format_unit(lang: str, count: int, unit: str) -> str:
-    prefix = {"ua": "Опубліковано", "ru": "Опубликовано", "en": "Published"}
-    head = prefix.get(lang, prefix["ru"])
+    head = _prefix(lang)
 
     if lang == "ua":
         units = {
-            "minute": _plural_ua(count, "хвилину", "хвилини", "хвилин"),
-            "hour": _plural_ua(count, "годину", "години", "годин"),
+            "minute": _plural_ua(count, "хв.", "хв.", "хв."),
+            "hour": _plural_ua(count, "год.", "год.", "год."),
             "day": _plural_ua(count, "день", "дні", "днів"),
             "week": _plural_ua(count, "тиждень", "тижні", "тижнів"),
         }
-        return f"📅 {head} {count} {units[unit]} тому"
+        return f"⏱ {head}: {count} {units[unit]} тому"
 
     if lang == "ru":
         units = {
-            "minute": _plural_ru(count, "минуту", "минуты", "минут"),
-            "hour": _plural_ru(count, "час", "часа", "часов"),
+            "minute": _plural_ru(count, "мин.", "мин.", "мин."),
+            "hour": _plural_ru(count, "ч.", "ч.", "ч."),
             "day": _plural_ru(count, "день", "дня", "дней"),
             "week": _plural_ru(count, "неделю", "недели", "недель"),
         }
-        return f"📅 {head} {count} {units[unit]} назад"
+        return f"⏱ {head}: {count} {units[unit]} назад"
 
     units = {
-        "minute": _plural_en(count, "minute", "minutes"),
-        "hour": _plural_en(count, "hour", "hours"),
+        "minute": _plural_en(count, "min", "min"),
+        "hour": _plural_en(count, "h", "h"),
         "day": _plural_en(count, "day", "days"),
         "week": _plural_en(count, "week", "weeks"),
     }
-    return f"📅 {head} {count} {units[unit]} ago"
+    return f"⏱ {head}: {count} {units[unit]} ago"

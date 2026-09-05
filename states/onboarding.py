@@ -27,3 +27,4 @@ class OnboardingStates(StatesGroup):
     pets = State()
     income = State()  # необязательный шаг: можно пропустить → net_income = None
     custom_notes = State()
+    custom_template = State()  # персональный шаблон Anschreiben (из /settings)

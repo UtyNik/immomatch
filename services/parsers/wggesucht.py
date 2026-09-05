@@ -188,6 +188,8 @@ class WGGesuchtProvider(BaseProvider):
         listings: list[ListingData] = []
         seen_ids: set[str] = set()
         html_blocked = False
+        block_html: str | None = None
+        block_context: str | None = None
 
         async with httpx.AsyncClient(
             headers=_HEADERS,
@@ -210,7 +212,7 @@ class WGGesuchtProvider(BaseProvider):
 
             center_coords = await _geocode_city(client, city_info.city_name)
 
-            html_blocked = await _fetch_html_listings(
+            html_blocked, block_html, block_context = await _fetch_html_listings(
                 client,
                 search_cities,
                 categories=categories,
@@ -243,7 +245,7 @@ class WGGesuchtProvider(BaseProvider):
                         len(extra_cities),
                     )
                     search_cities.extend(extra_cities)
-                    blocked = await _fetch_html_listings(
+                    blocked, html_sample, ctx = await _fetch_html_listings(
                         client,
                         extra_cities,
                         categories=categories,
@@ -253,6 +255,9 @@ class WGGesuchtProvider(BaseProvider):
                         listings=listings,
                     )
                     html_blocked = html_blocked or blocked
+                    if blocked and html_sample:
+                        block_html = block_html or html_sample
+                        block_context = block_context or ctx
 
             if not listings or html_blocked:
                 sitemap_cities = list(search_cities)
@@ -293,6 +298,20 @@ class WGGesuchtProvider(BaseProvider):
                     "WG-Gesucht: sitemap+API для %s — +%d (всего %d)",
                     city_info.city_name,
                     added,
+                    len(listings),
+                )
+
+            # CAPTCHA на HTML — алерт только если объявлений так и нет.
+            if html_blocked and not listings and block_html:
+                await alert_blocked_html(
+                    "wggesucht",
+                    block_html,
+                    context=block_context or city_info.city_name,
+                )
+            elif html_blocked and listings:
+                logger.info(
+                    "WG-Gesucht: CAPTCHA на HTML, но fallback отдал %d объявлений — "
+                    "алерт не отправляю",
                     len(listings),
                 )
 
@@ -343,9 +362,15 @@ async def _fetch_html_listings(
     budget_max: Any,
     seen_ids: set[str],
     listings: list[ListingData],
-) -> bool:
-    """HTML-выдача по списку городов. True, если хотя бы раз был CAPTCHA."""
+) -> tuple[bool, str | None, str | None]:
+    """HTML-выдача по списку городов.
+
+    Возвращает (blocked, block_html, block_context). Алерт CAPTCHA не шлёт —
+    вызывающий решает после fallback.
+    """
     html_blocked = False
+    block_html: str | None = None
+    block_context: str | None = None
 
     for city_info in cities:
         for category_code, category_slug in categories:
@@ -385,11 +410,8 @@ async def _fetch_html_listings(
 
                 if _is_blocked_html(response.text):
                     html_blocked = True
-                    await alert_blocked_html(
-                        "wggesucht",
-                        response.text,
-                        context=f"{category_slug}/{city_info.city_name}",
-                    )
+                    block_html = response.text
+                    block_context = f"{category_slug}/{city_info.city_name}"
                     logger.warning(
                         "WG-Gesucht: выдача %s/%s заблокирована (CAPTCHA) — "
                         "переключаюсь на sitemap+API",
@@ -429,7 +451,7 @@ async def _fetch_html_listings(
         if html_blocked:
             break
 
-    return html_blocked
+    return html_blocked, block_html, block_context
 
 
 def city_to_slug(city: str) -> str:

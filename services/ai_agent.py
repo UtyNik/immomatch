@@ -73,6 +73,11 @@ Reject the listing only in these cases:
   "nur Singles oder Paare" and "Paare oder kleine Familien" match a
   household of two. "keine Familien" blocks household_type "family"
   or household_size >= 3.
+  CRITICAL: if tenant.tenants_count / household_size is 2 or more and the
+  listing is strictly for one person ("nur an 1 Person", "nur für
+  Einzelperson", "1 Person max", "single only", "nur Singles" without
+  Paare) — reject. If it is a WG room for one student and household is 2+
+  — reject (is_suitable / match: false).
   Never reject two people because "they should know each other" or because
   the landlord prefers a couple — two is a couple-sized household;
 - the listing demands a WBS the tenant does not have: "nur mit WBS",
@@ -153,7 +158,15 @@ You write German cover letters (Anschreiben) for apartment hunters.
 You receive a tenant profile and a listing the tenant wants to apply for.
 Answer with JSON only: {{"anschreiben": "..."}}
 
-The letter must be polite, flawless German of 80-150 words.
+Write natural, living German — friendly, confident and polite, like a real
+person looking for a flat. Avoid stiff bureaucratic or robotic phrases such
+as "Hiermit bewerbe ich mich zutiefst", "möchte ich mein Interesse bekunden",
+"ich erlaube mir", or similar template filler. Keep 80-150 words.
+
+If tenant.custom_template is a non-empty string: treat it as the tenant's
+own draft / personal facts. Use it as the backbone of the letter, adapt
+wording to THIS listing (salutation, address details, landlord wishes),
+and keep the tenant's voice. Do not ignore facts from custom_template.
 
 Start the letter with listing.salutation exactly as given in the JSON payload.
 Do not replace it with another greeting. Sign it exactly:
@@ -183,7 +196,8 @@ German grammar is mandatory and follows applicant_gender and household_type:
 
 Watch articles, cases and declensions: never write "ich bin ruhiger Mieter".
 
-Mention only facts given in the profile, and only those that help:
+Mention only facts given in the profile (and custom_template), and only those
+that help:
 - employment is EXPLICIT: tenant.is_employed is true, false or may be
   absent. If is_employed is false: NEVER write that the tenant works,
   is employed, berufstätig, angestellt, has a Festanstellung, Arbeitgeber,
@@ -518,6 +532,7 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "sqm_min": user_profile.get("sqm_min"),
         "sqm_max": user_profile.get("sqm_max"),
         "household_size": user_profile.get("household_size"),
+        "tenants_count": user_profile.get("household_size"),
         "household_type": user_profile.get("household_type"),
         "has_wbs": user_profile.get("has_wbs"),
         "uses_jobcenter": user_profile.get("uses_jobcenter"),
@@ -525,6 +540,8 @@ def _build_payload(user_profile: dict[str, Any], apartment: dict[str, Any]) -> s
         "has_pets": user_profile.get("has_pets"),
         "bundesland": user_profile.get("bundesland"),
         "restrict_to_bundesland": user_profile.get("restrict_to_bundesland"),
+        "custom_template": str(user_profile.get("custom_template") or "").strip()
+        or None,
         "notes": user_profile.get("custom_notes"),
     }
     net_income = _optional_net_income(user_profile.get("net_income"))
@@ -653,6 +670,41 @@ _GENDER_MIXED = re.compile(
     r"studentinnen\s+und\s+studenten|studenten\s+und\s+studentinnen",
     re.IGNORECASE,
 )
+
+# Квартира строго на одного — для household_size >= 2.
+_SINGLE_PERSON_ONLY = re.compile(
+    r"nur\s+(?:an\s+)?1\s+person|"
+    r"nur\s+f(?:ü|u)r\s+(?:eine?\s+)?(?:einzel)?person|"
+    r"nur\s+f(?:ü|u)r\s+singles?\b|"
+    r"1\s+person\s+max|"
+    r"max\.?\s*1\s+person|"
+    r"maximal\s+1\s+person|"
+    r"f(?:ü|u)r\s+(?:max\.?\s*)?1\s+person|"
+    r"geeignet\s+f(?:ü|u)r\s+1\s+person|"
+    r"single\s+only|"
+    r"nur\s+eine\s+person|"
+    r"alleinst(?:ehend|e)\s+(?:gesucht|willkommen)|"
+    r"kein(?:e)?\s+paare|"
+    r"keine\s+paare|"
+    r"nur\s+einzelperson",
+    re.IGNORECASE,
+)
+
+
+def single_occupancy_reason(
+    profile: dict[str, Any], apartment: dict[str, Any]
+) -> str | None:
+    """Объявление только на 1 человека при 2+ в анкете."""
+    try:
+        people = int(profile.get("household_size") or 0)
+    except (TypeError, ValueError):
+        return None
+    if people < 2:
+        return None
+    text = f"{apartment.get('title') or ''} {apartment.get('description') or ''}"
+    if _SINGLE_PERSON_ONLY.search(text):
+        return "объявление только для 1 человека"
+    return None
 
 
 def gender_restriction_reason(
@@ -851,16 +903,11 @@ def _failure(reason: str) -> dict[str, Any]:
     return {"match": False, "reason": reason, "anschreiben": "", "error": True}
 
 
-async def analyze_apartment_and_generate_letter(
+async def analyze_apartment(
     user_profile: dict[str, Any],
     apartment: dict[str, Any],
 ) -> dict[str, Any]:
-    """Оценивает объявление и, если оно подходит, пишет Anschreiben.
-
-    Всегда возвращает словарь с ключами match, reason и anschreiben. При сбое
-    обращения к OpenAI добавляется ключ error=True, чтобы вызывающий код мог
-    отличить «не подошло» от «оценить не удалось».
-    """
+    """Оценивает объявление без генерации Anschreiben (экономия токенов)."""
     language = _LANGUAGE_NAMES.get(
         str(user_profile.get("language") or DEFAULT_LANG), _LANGUAGE_NAMES["ua"]
     )
@@ -885,11 +932,13 @@ async def analyze_apartment_and_generate_letter(
         if overturned is not None:
             logger.info("Отказ по объявлению %s отменён: %s", listing_id, overturned)
             match = True
-            # Объяснение отказа в карточке подошедшей квартиры только запутает.
             reason = ""
 
-    # Страховка: модель может пропустить «pro Person» / «WG Vermietung»,
-    # а отмена отказа по «max. 2 Personen» как раз так и показала эту квартиру.
+    occupancy = single_occupancy_reason(user_profile, apartment)
+    if match and occupancy:
+        logger.info("Объявление %s отклонено кодом: %s", listing_id, occupancy)
+        return {"match": False, "reason": occupancy, "anschreiben": ""}
+
     wg_reason = shared_wg_reason(user_profile, apartment)
     if match and wg_reason:
         logger.info("Объявление %s отклонено кодом: %s", listing_id, wg_reason)
@@ -920,7 +969,7 @@ async def analyze_apartment_and_generate_letter(
     budget = user_profile.get("budget_max")
     price = apartment.get("price")
     if match and budget is not None and price is not None and price > budget:
-        over = f"цена {int(price)} € > бюджет {int(budget)} €"
+        over = f"Превышен бюджет Warmmiete ({int(price)} € > {int(budget)} €)"
         logger.info("Объявление %s отклонено кодом: %s", listing_id, over)
         return {"match": False, "reason": over, "anschreiben": ""}
 
@@ -935,19 +984,53 @@ async def analyze_apartment_and_generate_letter(
         logger.info("Объявление %s отклонено: %s", listing_id, reason)
         return {"match": False, "reason": reason, "anschreiben": ""}
 
+    logger.info("Объявление %s подошло (без письма)", listing_id)
+    return {"match": True, "reason": reason, "anschreiben": ""}
+
+
+async def generate_anschreiben(
+    user_profile: dict[str, Any],
+    apartment: dict[str, Any],
+) -> dict[str, Any]:
+    """Генерирует только Anschreiben для уже подходящего объявления."""
+    listing_id = apartment.get("external_id")
+    payload = _build_payload(user_profile, apartment)
     try:
-        letter = str((await _ask(
-            _LETTER_PROMPT, payload, MAX_LETTER_TOKENS, listing_id
-        )).get("anschreiben") or "").strip()
+        letter = str(
+            (
+                await _ask(
+                    _LETTER_PROMPT, payload, MAX_LETTER_TOKENS, listing_id
+                )
+            ).get("anschreiben")
+            or ""
+        ).strip()
     except RuntimeError as error:
-        # Объявление подходит — показываем его даже без письма: карточка со
-        # ссылкой полезнее, чем сообщение об ошибке.
         logger.warning("Письмо по объявлению %s не написано: %s", listing_id, error)
-        letter = ""
+        return {"anschreiben": "", "error": True, "reason": str(error)}
 
     letter = apply_letter_income_policy(letter, user_profile, apartment)
     letter = apply_letter_employment_policy(letter, user_profile)
     letter = apply_letter_salutation(letter, salutation_from_listing(apartment))
     letter = apply_letter_signature(letter, user_profile)
-    logger.info("Объявление %s подошло, длина письма %d", listing_id, len(letter))
-    return {"match": True, "reason": reason, "anschreiben": letter}
+    logger.info("Письмо по объявлению %s готово, длина %d", listing_id, len(letter))
+    return {"anschreiben": letter, "error": False}
+
+
+async def analyze_apartment_and_generate_letter(
+    user_profile: dict[str, Any],
+    apartment: dict[str, Any],
+) -> dict[str, Any]:
+    """Совместимость: оценка + письмо (предпочтительнее раздельные вызовы)."""
+    verdict = await analyze_apartment(user_profile, apartment)
+    if verdict.get("error") or not verdict.get("match"):
+        return verdict
+    letter_result = await generate_anschreiben(user_profile, apartment)
+    verdict["anschreiben"] = letter_result.get("anschreiben") or ""
+    if letter_result.get("error"):
+        # Карточка всё равно полезна без письма.
+        logger.warning(
+            "Письмо к подходящему %s не сгенерировано: %s",
+            apartment.get("external_id"),
+            letter_result.get("reason"),
+        )
+    return verdict
